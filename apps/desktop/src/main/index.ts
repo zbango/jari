@@ -8,6 +8,11 @@ let mainWindow: BrowserWindow | null = null;
 app.setName(productName);
 
 async function createWindow(): Promise<void> {
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+  const developmentUrl = !app.isPackaged && rendererUrl ? new URL(rendererUrl).href : undefined;
+  if (developmentUrl && developmentUrl !== "http://127.0.0.1:5173/") {
+    throw new Error("The renderer development server must use the configured loopback URL");
+  }
   const window = new BrowserWindow({
     title: productName,
     width: 840,
@@ -32,18 +37,17 @@ async function createWindow(): Promise<void> {
 
   const { webContents } = window;
   webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  webContents.on("will-frame-navigate", (event) => event.preventDefault());
+  webContents.on("will-frame-navigate", (event) => {
+    if (!developmentUrl || !event.isMainFrame || event.url !== developmentUrl) {
+      event.preventDefault();
+    }
+  });
   webContents.on("will-redirect", (event) => event.preventDefault());
   webContents.on("will-attach-webview", (event) => event.preventDefault());
   window.once("ready-to-show", () => window.show());
 
-  const developmentUrl = process.env.ELECTRON_RENDERER_URL;
-  if (!app.isPackaged && developmentUrl) {
-    const url = new URL(developmentUrl);
-    if (url.origin !== "http://127.0.0.1:5173" || url.pathname !== "/" || url.search || url.hash) {
-      throw new Error("The renderer development server must use the configured loopback URL");
-    }
-    await window.loadURL(url.href);
+  if (developmentUrl) {
+    await window.loadURL(developmentUrl);
   } else {
     await window.loadFile(join(__dirname, "../renderer/index.html"));
   }

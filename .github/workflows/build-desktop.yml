@@ -123,8 +123,8 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           payload="$(mktemp -d)"
           dpkg-deb -x apps/desktop/dist/*.deb "$payload"
-          xvfb-run -a node scripts/smoke.mjs "$payload/opt/Agent Desktop/agent-desktop"
-          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a node scripts/smoke.mjs apps/desktop/dist/*.AppImage
+          xvfb-run -a node scripts/smoke.mjs "$payload/opt/Agent Desktop/agent-desktop" --ozone-platform=x11
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a node scripts/smoke.mjs apps/desktop/dist/*.AppImage --ozone-platform=x11
       - name: Verify macOS metadata and start the packaged app
         if: runner.os == 'macOS'
         shell: bash

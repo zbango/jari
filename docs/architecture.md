@@ -13,7 +13,7 @@ The desktop app consumes shared source packages. The renderer build bundles UI a
 
 ## Security model
 
-Every renderer runs with Chromium sandboxing and context isolation enabled and Node integration disabled. Main denies renderer-initiated navigation, redirects, new windows, embedded webviews, downloads and permission requests. The preload exposes two read-only strings. The packaged renderer loads its local HTML and constrains scripts and styles to local assets with CSP. During development the loopback server at `127.0.0.1:5173` supplies a CSP that allows the React refresh preamble, injected styles and the HMR socket. Packaged builds ignore the development server URL.
+Every renderer runs with Chromium sandboxing and context isolation enabled and Node integration disabled. Main denies renderer-initiated navigation, redirects, new windows, embedded webviews, downloads and permission requests. The preload exposes two read-only strings. The packaged renderer loads its local HTML and constrains scripts and styles to local assets with CSP. During development the loopback server at `127.0.0.1:5173` supplies a CSP that allows the React refresh preamble, injected styles and the HMR socket. Preload rebuilds can reload the exact loopback page. Packaged builds ignore the development server URL.
 
 ## Future integration
 
