@@ -1,9 +1,8 @@
 # Development
 
-Use Node.js **24.20.0**, pinned in `.node-version`, and pnpm **12.21.0**, pinned in `package.json`. Install Corepack **0.36.0** if the bundled version is unavailable or cannot resolve the pnpm pin.
+Use Node.js **24.20.0**, pinned in `.node-version`, and pnpm **12.21.0**, pinned in `package.json`. Use the Corepack bundled with Node.js to enable the pnpm shim. If your Node distribution omits it, follow the [Corepack installation instructions](https://github.com/nodejs/corepack#how-to-install).
 
 ```sh
-npm install --global corepack@0.36.0
 corepack enable pnpm
 pnpm install --frozen-lockfile
 pnpm dev

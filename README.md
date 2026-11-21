@@ -4,10 +4,9 @@ Agent Desktop is the foundation for a local-first visual workspace for observing
 
 ## Get started
 
-Install Node.js **24.20.0** and enable the pnpm shim. Corepack selects **pnpm 12.21.0** from the root package manifest.
+Install Node.js **24.20.0** and enable the pnpm shim with its bundled Corepack. Corepack selects **pnpm 12.21.0** from the root package manifest.
 
 ```sh
-npm install --global corepack@0.36.0
 corepack enable pnpm
 pnpm install
 pnpm dev
