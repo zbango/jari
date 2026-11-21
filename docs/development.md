@@ -22,6 +22,8 @@ Renderer changes use React Fast Refresh. Electron Vite restarts Electron for mai
 
 ## Shared UI
 
+The renderer uses Once UI Core 3.0.0 through `packages/ui`. The shared stylesheet loads Once UI's bundled tokens and styles, and the renderer's theme provider follows the system color scheme. Add Once UI components in `packages/ui/src/components` using their public component entry points, such as `@once-ui-system/core/components/StatusIndicator`. For theme overrides, use bundled CSS under the renderer's Content Security Policy. [Once UI installation guide](https://docs.once-ui.com/quick-start)
+
 The desktop and UI package each have a `components.json`. The UI package owns the shared CSS tokens and exports component and utility paths. The pinned CLI can add a component from the desktop workspace when the application needs one:
 
 ```sh

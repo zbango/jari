@@ -9,9 +9,7 @@ export function App({ desktop }: { desktop: DesktopInfo }) {
         <img src={icon} width="56" height="56" alt="" className="mb-5" />
         <h1 className="text-2xl font-semibold tracking-tight">{desktop.name}</h1>
         <div className="mt-5 space-y-1 border-t border-border pt-4 text-sm">
-          <p data-desktop-status>
-            <StatusLabel>Application shell is operational</StatusLabel>
-          </p>
+          <StatusLabel data-desktop-status>Application shell is operational</StatusLabel>
           <p data-desktop-version className="text-muted-foreground">
             Version {desktop.version}
           </p>

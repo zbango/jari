@@ -12,7 +12,7 @@ pnpm install
 pnpm dev
 ```
 
-The workspace uses Turborepo, Electron, electron-vite, Vite, React, strict TypeScript, Tailwind CSS and a shared shadcn/ui configuration. Oxlint, Oxfmt and Vitest provide the quality checks. electron-builder creates installers and GitHub Actions builds them on native runners.
+The workspace uses Turborepo, Electron, electron-vite, Vite, React, strict TypeScript, Tailwind CSS, Once UI and a shared shadcn/ui configuration. Oxlint, Oxfmt and Vitest provide the quality checks. electron-builder creates installers and GitHub Actions builds them on native runners.
 
 | Command                             | Runs                                                           |
 | ----------------------------------- | -------------------------------------------------------------- |

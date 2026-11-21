@@ -1,13 +1,13 @@
 # Architecture
 
-| Boundary                    | Responsibility                                                                                |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `apps/desktop/src/main`     | Owns the Electron lifecycle, native windows, navigation and permission policy.                |
-| `apps/desktop/src/preload`  | Exposes immutable application name and version through a typed context bridge.                |
-| `apps/desktop/src/renderer` | Renders the React shell and consumes shared UI, browser APIs and the narrow preload contract. |
-| `packages/shared`           | Defines the bridge metadata shape and validates stable release tags for distribution tooling. |
-| `packages/ui`               | Owns reusable components, Tailwind theme tokens and shadcn/ui utilities.                      |
-| `packages/config`           | Owns the common strict TypeScript options consumed through the root config.                   |
+| Boundary                    | Responsibility                                                                                        |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `apps/desktop/src/main`     | Owns the Electron lifecycle, native windows, navigation and permission policy.                        |
+| `apps/desktop/src/preload`  | Exposes immutable application name and version through a typed context bridge.                        |
+| `apps/desktop/src/renderer` | Renders the React shell and consumes shared UI, browser APIs and the narrow preload contract.         |
+| `packages/shared`           | Defines the bridge metadata shape and validates stable release tags for distribution tooling.         |
+| `packages/ui`               | Owns reusable components, the Once UI theme and base styles, Tailwind tokens and shadcn/ui utilities. |
+| `packages/config`           | Owns the common strict TypeScript options consumed through the root config.                           |
 
 The desktop app consumes shared source packages. The renderer build bundles UI and React, and the preload build embeds metadata from the desktop manifest. Installers ship the generated bundles and project icon. Shared packages have no dependency on the app or Electron.
 

@@ -1,3 +1,4 @@
+import { ThemeProvider } from "@agent-desktop/ui/theme";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./app";
@@ -10,6 +11,8 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <App desktop={window.desktop} />
+    <ThemeProvider theme="system" persistence="none">
+      <App desktop={window.desktop} />
+    </ThemeProvider>
   </StrictMode>,
 );
