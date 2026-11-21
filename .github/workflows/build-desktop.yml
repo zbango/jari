@@ -145,9 +145,14 @@ jobs:
           $bytes = [IO.File]::ReadAllBytes((Resolve-Path $app))
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
           if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) { throw 'Expected an x64 PE executable' }
-          if ((Get-Item $app).VersionInfo.ProductName -ne 'Agent Desktop') { throw 'Unexpected product metadata' }
-          $version = node -p "require('./apps/desktop/package.json').version"
-          if ((Get-Item $app).VersionInfo.ProductVersion -ne $version) { throw 'Unexpected product version' }
+          $manifest = Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json
+          $metadata = (Get-Item $app).VersionInfo
+          if ($metadata.ProductName -ne $manifest.productName) { throw "Unexpected product name '$($metadata.ProductName)'" }
+          $expectedVersion = ($manifest.version -split '[-+]', 2)[0]
+          $actualVersion = '{0}.{1}.{2}' -f $metadata.ProductMajorPart, $metadata.ProductMinorPart, $metadata.ProductBuildPart
+          if ($actualVersion -ne $expectedVersion) {
+            throw "Expected product version $expectedVersion, found $actualVersion (Windows resource: $($metadata.ProductVersion))"
+          }
           node scripts/smoke.mjs $app
       - name: Stage and verify installers
         run: node scripts/release-artifacts.mjs stage "${{ matrix.target }}" installers
