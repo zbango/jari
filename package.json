@@ -1,0 +1,27 @@
+{
+  "name": "agent-desktop-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "turbo run dev --filter=@agent-desktop/desktop",
+    "build": "turbo run build",
+    "lint": "oxlint --deny-warnings scripts && turbo run lint",
+    "lint:fix": "oxlint --deny-warnings --fix scripts && turbo run lint:fix",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "check": "pnpm format:check && pnpm lint && turbo run typecheck test",
+    "package": "turbo run package --filter=@agent-desktop/desktop"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "oxfmt": "0.79.0",
+    "oxlint": "1.94.0",
+    "turbo": "2.11.13",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24.20.0 <25"
+  },
+  "packageManager": "pnpm@12.21.0"
+}

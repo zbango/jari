@@ -1,0 +1,7 @@
+{
+  "name": "@agent-desktop/config",
+  "private": true,
+  "exports": {
+    "./typescript/base.json": "./typescript/base.json"
+  }
+}

@@ -1,0 +1,24 @@
+name: Install workspace dependencies
+description: Activate the pinned Node and pnpm toolchain and restore the dependency store
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v6
+      with:
+        node-version-file: .node-version
+    - name: Enable Corepack
+      shell: bash
+      run: |
+        npm install --global corepack@0.36.0
+        corepack enable pnpm
+        pnpm --version
+    - name: Locate dependency store
+      id: store
+      shell: bash
+      run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v5
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml') }}
+    - shell: bash
+      run: pnpm install --frozen-lockfile

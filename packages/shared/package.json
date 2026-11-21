@@ -1,0 +1,16 @@
+{
+  "name": "@agent-desktop/shared",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --deny-warnings --fix .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@agent-desktop/config": "workspace:*",
+    "vitest": "5.1.1"
+  }
+}

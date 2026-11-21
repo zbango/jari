@@ -1,0 +1,158 @@
+name: Build desktop
+
+on:
+  workflow_call:
+    inputs:
+      trusted:
+        type: boolean
+        default: false
+    secrets:
+      mac_certificate:
+        required: false
+      mac_certificate_password:
+        required: false
+      apple_id:
+        required: false
+      apple_app_password:
+        required: false
+      apple_team_id:
+        required: false
+      windows_certificate:
+        required: false
+      windows_certificate_password:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - name: Validate release version
+        if: inputs.trusted
+        run: node scripts/release-artifacts.mjs validate-tag "$GITHUB_REF_NAME"
+      - run: pnpm check
+      - run: pnpm build
+
+  installers:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+            arch: x64
+          - runner: windows-2025
+            target: windows-x64
+            arch: x64
+          - runner: macos-15-intel
+            target: macos-x64
+            arch: x64
+          - runner: macos-15
+            target: macos-arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - name: Install Linux packaging and display tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libgtk-3-0t64 libasound2t64 libnss3 libfuse2t64 libcrypt1 fakeroot
+      - name: Build validation installers
+        if: "!inputs.trusted || runner.os == 'Linux'"
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm package -- "--$ARCH" "-c.extraMetadata.homepage=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+      - name: Sign and notarize macOS build
+        if: inputs.trusted && runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.mac_certificate }}
+          CSC_KEY_PASSWORD: ${{ secrets.mac_certificate_password }}
+          APPLE_ID: ${{ secrets.apple_id }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.apple_app_password }}
+          APPLE_TEAM_ID: ${{ secrets.apple_team_id }}
+        run: |
+          : "${CSC_LINK:?Missing MAC_CSC_LINK}" "${CSC_KEY_PASSWORD:?Missing MAC_CSC_KEY_PASSWORD}"
+          : "${APPLE_ID:?Missing APPLE_ID}" "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD}" "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID}"
+          pnpm package -- "--$ARCH" -c.forceCodeSigning=true -c.dmg.sign=true
+          case "$ARCH" in
+            arm64) folder=mac-arm64 ;;
+            x64) folder=mac ;;
+          esac
+          app="apps/desktop/dist/$folder/Agent Desktop.app"
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          set -- apps/desktop/dist/*.dmg
+          test "$#" -eq 1 && test -s "$1"
+          codesign --verify --strict "$1"
+          xcrun notarytool submit "$1" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$1"
+          xcrun stapler validate "$1"
+      - name: Sign and verify Windows build
+        if: inputs.trusted && runner.os == 'Windows'
+        env:
+          WIN_CSC_LINK: ${{ secrets.windows_certificate }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.windows_certificate_password }}
+        run: |
+          if (!$env:WIN_CSC_LINK -or !$env:WIN_CSC_KEY_PASSWORD) { throw 'Missing WIN_CSC_LINK or WIN_CSC_KEY_PASSWORD' }
+          pnpm package -- "--$env:ARCH" -c.forceCodeSigning=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = @(Get-ChildItem apps/desktop/dist -Filter '*.exe' -File)
+          if ($installer.Count -ne 1) { throw 'Expected one NSIS installer' }
+          foreach ($path in @($installer[0].FullName, 'apps/desktop/dist/win-unpacked/agent-desktop.exe')) {
+            if ((Get-AuthenticodeSignature $path).Status -ne 'Valid') { throw "Invalid Authenticode signature for $path" }
+          }
+      - name: Verify Linux metadata and start the packaged app
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test "$(dpkg-deb -f apps/desktop/dist/*.deb Package)" = agent-desktop
+          test "$(dpkg-deb -f apps/desktop/dist/*.deb Architecture)" = amd64
+          test "$(dpkg-deb -f apps/desktop/dist/*.deb Version)" = "$(node -p "require('./apps/desktop/package.json').version")"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          payload="$(mktemp -d)"
+          dpkg-deb -x apps/desktop/dist/*.deb "$payload"
+          xvfb-run -a node scripts/smoke.mjs "$payload/opt/Agent Desktop/agent-desktop"
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a node scripts/smoke.mjs apps/desktop/dist/*.AppImage
+      - name: Verify macOS metadata and start the packaged app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          case "$ARCH" in
+            arm64) folder=mac-arm64; expected=arm64 ;;
+            x64) folder=mac; expected=x86_64 ;;
+          esac
+          app="apps/desktop/dist/$folder/Agent Desktop.app/Contents"
+          test "$(lipo -archs "$app/MacOS/Agent Desktop")" = "$expected"
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")" = app.agentdesktop.desktop
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Info.plist")" = "$(node -p "require('./apps/desktop/package.json').version")"
+          node scripts/smoke.mjs "$app/MacOS/Agent Desktop"
+      - name: Verify Windows metadata and start the packaged app
+        if: runner.os == 'Windows'
+        run: |
+          $app = 'apps/desktop/dist/win-unpacked/agent-desktop.exe'
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $app))
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) { throw 'Expected an x64 PE executable' }
+          if ((Get-Item $app).VersionInfo.ProductName -ne 'Agent Desktop') { throw 'Unexpected product metadata' }
+          $version = node -p "require('./apps/desktop/package.json').version"
+          if ((Get-Item $app).VersionInfo.ProductVersion -ne $version) { throw 'Unexpected product version' }
+          node scripts/smoke.mjs $app
+      - name: Stage and verify installers
+        run: node scripts/release-artifacts.mjs stage "${{ matrix.target }}" installers
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.trusted && 'release' || 'validation-unsigned' }}-${{ matrix.target }}
+          path: installers/
+          if-no-files-found: error

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["tsconfig.base.json", ".oxlintrc.json", ".node-version"],
+  "globalEnv": ["ELECTRON_RUN_AS_NODE"],
+  "tasks": {
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["out/**"]
+    },
+    "lint": {
+      "dependsOn": ["^lint"]
+    },
+    "lint:fix": {
+      "cache": false
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^test"]
+    },
+    "package": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": ["CSC_*", "WIN_CSC_*", "APPLE_*"]
+    }
+  }
+}

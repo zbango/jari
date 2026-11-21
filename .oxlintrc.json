@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "react", "import"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "import/no-duplicates": "error",
+    "import/no-self-import": "error",
+    "import/no-cycle": "error"
+  },
+  "ignorePatterns": ["**/out/**", "**/dist/**", "**/.turbo/**", "**/coverage/**"],
+  "overrides": [
+    {
+      "files": ["apps/desktop/src/renderer/**/*.{ts,tsx}", "packages/ui/src/**/*.{ts,tsx}"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              "node:*",
+              "electron",
+              "fs",
+              "fs/*",
+              "child_process",
+              "child_process/*",
+              "process"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
