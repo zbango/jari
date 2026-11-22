@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { releaseVersionFromTag } from "../packages/shared/src/index.ts";
+import { releaseVersionFromTag } from "../packages/shared/src/release-version.ts";
 
 const desktop = new URL("../apps/desktop/", import.meta.url);
 const { version } = JSON.parse(await readFile(new URL("package.json", desktop), "utf8"));

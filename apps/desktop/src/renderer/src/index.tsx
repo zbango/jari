@@ -12,7 +12,7 @@ if (!root) {
 createRoot(root).render(
   <StrictMode>
     <ThemeProvider theme="system" persistence="none">
-      <App desktop={window.desktop} />
+      <App desktop={window.desktop} api={window.workflows} />
     </ThemeProvider>
   </StrictMode>,
 );

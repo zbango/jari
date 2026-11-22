@@ -1,6 +1,6 @@
 # Agent Desktop
 
-Agent Desktop is the foundation for a local-first visual workspace for observing and coordinating coding agents such as Claude Code and OpenAI Codex. The initial desktop shell shows its startup status and application version.
+Agent Desktop is the foundation for a local-first visual workspace for observing and coordinating coding agents such as Claude Code and OpenAI Codex. The desktop app provides an interactive Idea → Plan → Build canvas. You can save a request with a provider and local workspace, reopen it from history, and inspect workflow stages. Provider execution is a later milestone.
 
 ## Get started
 

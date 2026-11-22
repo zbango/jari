@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { app, BrowserWindow, session } from "electron";
 import { productName } from "../../package.json";
+import { registerWorkflowHandlers } from "./workflow-ipc";
 
 const smokeTest = process.argv.includes("--smoke-test");
 let mainWindow: BrowserWindow | null = null;
@@ -15,10 +16,10 @@ async function createWindow(): Promise<void> {
   }
   const window = new BrowserWindow({
     title: productName,
-    width: 840,
-    height: 580,
-    minWidth: 320,
-    minHeight: 300,
+    width: 1350,
+    height: 840,
+    minWidth: 620,
+    minHeight: 480,
     show: false,
     icon: join(app.getAppPath(), "resources", "icon.png"),
     webPreferences: {
@@ -60,14 +61,14 @@ async function createWindow(): Promise<void> {
           reject(new Error("The React shell did not render"));
         }, 10000);
         const readShell = () => {
-          const status = document.querySelector("[data-desktop-status]");
-          if (!status) return;
+          const canvas = document.querySelector("[data-workflow-canvas]");
+          if (!canvas?.querySelector(".react-flow__node") || !document.querySelector("#workflow-request")) return;
           observer.disconnect();
           clearTimeout(timer);
           resolve({
             name: document.querySelector("h1")?.textContent,
             version: document.querySelector("[data-desktop-version]")?.textContent,
-            status: status.textContent,
+            stages: ["idea", "plan", "build"].every(stage => canvas.querySelector(\`[data-stage="\${stage}"]\`)),
             display: getComputedStyle(document.querySelector("main")).display,
             hasNode: typeof require !== "undefined" || typeof process !== "undefined",
           });
@@ -80,7 +81,7 @@ async function createWindow(): Promise<void> {
     if (
       shell.name !== productName ||
       shell.version !== `Version ${app.getVersion()}` ||
-      shell.status !== "Application shell is operational" ||
+      !shell.stages ||
       shell.display !== "grid" ||
       shell.hasNode
     ) {
@@ -109,6 +110,7 @@ void app
     session.defaultSession.setDevicePermissionHandler(() => false);
     session.defaultSession.on("will-download", (event) => event.preventDefault());
 
+    registerWorkflowHandlers(() => mainWindow);
     await createWindow();
     app.on("activate", () => {
       if (!mainWindow) {

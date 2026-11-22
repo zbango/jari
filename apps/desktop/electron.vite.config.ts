@@ -14,8 +14,8 @@ export default defineConfig(({ command }) => {
       : `${baseCsp}; script-src 'self'; style-src 'self'`;
 
   return {
-    main: {},
-    preload: {},
+    main: { build: { externalizeDeps: { exclude: ["@agent-desktop/shared"] } } },
+    preload: { build: { externalizeDeps: { exclude: ["@agent-desktop/shared"] } } },
     renderer: {
       resolve: { alias: { "@": fileURLToPath(new URL("./src/renderer/src", import.meta.url)) } },
       build: { minify: true },
