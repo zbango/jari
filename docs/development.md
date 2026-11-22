@@ -20,9 +20,21 @@ Renderer changes use React Fast Refresh. Electron Vite restarts Electron for mai
 - On Linux, Electron needs a desktop session or virtual X display plus GTK, NSS and ALSA runtime libraries. Debian packaging also requires the `libcrypt.so.1` compatibility library. On Ubuntu 24.04 the workflow installs Xvfb and the supporting libraries. Its ephemeral runner allows unprivileged user namespaces so Chromium can sandbox the renderer.
 - Build and run a packaged smoke check on Linux with `xvfb-run -a node scripts/smoke.mjs apps/desktop/dist/linux-unpacked/agent-desktop`. On Windows and macOS, run the same script directly against the native executable. The smoke test reads the rendered heading, bridge metadata, Tailwind layout and absence of renderer Node globals before exiting.
 
+## Desktop logs
+
+Agent Desktop writes main and renderer console messages from debug through error to `logs/desktop.log` under Electron’s per-user application data directory. This location is writable for installed builds, including AppImage and installations in system directories.
+
+| Platform | Default log file                                                         |
+| -------- | ------------------------------------------------------------------------ |
+| Linux    | `~/.config/Agent Desktop/logs/desktop.log` (or under `$XDG_CONFIG_HOME`) |
+| macOS    | `~/Library/Application Support/Agent Desktop/logs/desktop.log`           |
+| Windows  | `%APPDATA%\Agent Desktop\logs\desktop.log`                               |
+
+The logger rotates at about 1 MiB and keeps the previous file as `desktop.old.log`. The console still receives logs during development. Environment diagnostics run during development only and can show [selected configuration values](jira-intake.md). API tokens stay redacted in those diagnostics.
+
 ## Shared UI
 
-The renderer uses Once UI Core 3.0.0 through `packages/ui`. The shared stylesheet loads Once UI's bundled tokens and styles, and the renderer's theme provider follows the system color scheme. Add Once UI components in `packages/ui/src/components` using their public component entry points, such as `@once-ui-system/core/components/StatusIndicator`. For theme overrides, use bundled CSS under the renderer's Content Security Policy. [Once UI installation guide](https://docs.once-ui.com/quick-start)
+The shared stylesheet loads Once UI Core's tokens and styles, and `packages/ui/src/theme.ts` defines the theme used by the renderer. The renderer bundles Geist and Geist Mono and uses the system color scheme until a theme is selected in Settings. Import Once UI components from their public entry points, such as `@once-ui-system/core/components/StatusIndicator`. [Once UI configuration guide](https://docs.once-ui.com/config)
 
 The desktop and UI package each have a `components.json`. The UI package owns the shared CSS tokens and exports component and utility paths. The pinned CLI can add a component from the desktop workspace when the application needs one:
 

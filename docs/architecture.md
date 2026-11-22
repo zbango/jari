@@ -13,11 +13,13 @@ The desktop app consumes shared source packages. The renderer build bundles UI a
 
 ## Security model
 
-Every renderer runs with Chromium sandboxing and context isolation enabled and Node integration disabled. Main denies renderer-initiated navigation, redirects, new windows, embedded webviews, downloads and permission requests. The preload exposes read-only metadata and three workflow methods for listing, creating and opening a native directory picker. Main checks the sending frame and saves only a directory previously selected through that window’s picker. The packaged renderer loads its local HTML and constrains scripts and styles to local assets with CSP. During development the loopback server at `127.0.0.1:5173` supplies a CSP that allows the React refresh preamble, injected styles and the HMR socket. Preload rebuilds can reload the exact loopback page. Packaged builds ignore the development server URL.
+Every renderer runs with Chromium sandboxing and context isolation enabled and Node integration disabled. Main denies renderer-initiated navigation, redirects, new windows, embedded webviews, downloads and permission requests. The preload exposes read-only metadata and specific methods to read Jira, list or start workflows, and open a native directory picker. Main checks the sending frame and saves only a directory previously selected through that window’s picker. The packaged renderer loads its local HTML and constrains scripts and styles to local assets with CSP. During development the loopback server at `127.0.0.1:5173` supplies a CSP that allows the React refresh preamble, injected styles and the HMR socket. Preload rebuilds can reload the exact loopback page. Packaged builds ignore the development server URL.
 
 ## Workflow records
 
-Electron main owns a SQLite database named `workflows.sqlite` in the application user-data directory. A record stores the original request, selected provider, canonical workspace path and creation time. The renderer derives the graph from the record and keeps selection, expansion and viewport in view state. Plan and Build display their current availability until provider integrations can supply real observations.
+Electron main owns a SQLite database named `workflows.sqlite` in the application user-data directory. A record stores the original request, selected provider, canonical workspace path and creation time. The renderer derives the graph from the record and keeps selection, expansion and viewport in view state. A separate intake table stores the Jira issue snapshot and planning state, preserving earlier standalone requests. Main runs the selected provider’s plan mode and projects its status into the graph. Build remains gated on plan approval.
+
+The planner prepares request context and dispatches through a shared provider contract. Each adapter in `apps/desktop/src/main/providers` owns its native command, protocol, and response mapping. The contract currently exposes planning.
 
 ## Future integration
 

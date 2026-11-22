@@ -5,7 +5,18 @@
   "tasks": {
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": [
+        "ATLASSIAN_INSTANCE_URL",
+        "ATLASSIAN_USER_EMAIL",
+        "ATLASSIAN_API_TOKEN",
+        "JARI_ATLASSIAN_*",
+        "JARI_CODEX_BIN",
+        "JARI_CLAUDE_BIN",
+        "JARI_DEBUG_ENV",
+        "CODEX_HOME",
+        "ANTHROPIC_*"
+      ]
     },
     "build": {
       "dependsOn": ["^build"],

@@ -1,8 +1,10 @@
+import type { WorkflowPlan } from "@agent-desktop/shared";
+
 export const stages = {
   idea: {
     title: "Idea",
     icon: "lightbulb",
-    description: "Capture the request and its workspace.",
+    description: "Inspect the work item and workspace.",
     sections: { request: "Request", workspace: "Workspace", context: "Context sources" },
   },
   plan: {
@@ -39,14 +41,27 @@ export type Stage = keyof typeof stages;
 export type Selection = { stage: Stage; section?: string };
 export const stageOrder: Stage[] = ["idea", "plan", "build"];
 
-export function stageStatus(stage: Stage, hasWorkflow: boolean) {
+export function stageStatus(stage: Stage, hasWorkflow: boolean, plan?: WorkflowPlan) {
   switch (stage) {
     case "idea":
       return hasWorkflow
         ? { label: "Request saved", kind: "saved", icon: "checkCircle" as const }
-        : { label: "Awaiting request", kind: "waiting", icon: "time" as const };
+        : { label: "Choose an issue", kind: "waiting", icon: "time" as const };
     case "plan":
-      return { label: "Pending", kind: "waiting", icon: "time" as const };
+      switch (plan?.state) {
+        case "running":
+          return { label: "Planning", kind: "running", icon: "time" as const };
+        case "ready":
+          return { label: "Draft ready", kind: "saved", icon: "checkCircle" as const };
+        case "needs-input":
+          return { label: "Needs input", kind: "waiting", icon: "message" as const };
+        case "failed":
+          return { label: "Planning failed", kind: "blocked", icon: "warning" as const };
+        case "interrupted":
+          return { label: "Interrupted", kind: "blocked", icon: "pause" as const };
+        default:
+          return { label: "Pending", kind: "waiting", icon: "time" as const };
+      }
     case "build":
       return { label: "Blocked", kind: "blocked", icon: "lock" as const };
   }

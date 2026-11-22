@@ -1,6 +1,6 @@
 # Agent Desktop
 
-Agent Desktop is the foundation for a local-first visual workspace for observing and coordinating coding agents such as Claude Code and OpenAI Codex. The desktop app provides an interactive Idea → Plan → Build canvas. You can save a request with a provider and local workspace, reopen it from history, and inspect workflow stages. Provider execution is a later milestone.
+Agent Desktop is the foundation for a local-first visual workspace for observing and coordinating coding agents such as Claude Code and OpenAI Codex. The desktop app provides an interactive Idea → Plan → Build canvas. Choose a Jira Cloud issue from an active sprint, review its context, and start a plan in Codex or Claude Code. Saved workflows and plans reopen from local history.
 
 ## Get started
 
@@ -29,3 +29,4 @@ Installer output is written to `apps/desktop/dist/`. The GitHub release workflow
 - [Architecture](docs/architecture.md)
 - [Local development](docs/development.md)
 - [Distribution and signing](docs/distribution.md)
+- [Jira work intake](docs/jira-intake.md)

@@ -1,44 +1,30 @@
 @import "@agent-desktop/ui/styles.css";
 @import "@xyflow/react/dist/style.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 @source ".";
 
 .workflow-app {
-  --workspace-bg: #f5f6fa;
-  --surface: #fff;
-  --surface-raised: #f2f3f9;
-  --surface-selected: #ebefff;
-  --text: #202333;
-  --text-secondary: #5c6278;
-  --line: #e1e4ef;
-  --accent: #4658bb;
-  --graph-dot: #cbd0e2;
-  --graph-link: #8994be;
-  --saved: #18704e;
-  --blocked: #8f5531;
-  --error: #a72f43;
+  --workspace-bg: var(--page-background);
+  --surface: var(--surface-background);
+  --surface-raised: var(--neutral-alpha-weak);
+  --surface-selected: var(--brand-alpha-weak);
+  --text: var(--neutral-on-background-strong);
+  --text-secondary: var(--neutral-on-background-medium);
+  --line: var(--default-border);
+  --accent: var(--brand-on-background-medium);
+  --graph-dot: var(--neutral-alpha-medium);
+  --graph-link: var(--brand-on-background-weak);
+  --saved: var(--success-on-background-medium);
+  --blocked: var(--warning-on-background-medium);
+  --error: var(--danger-on-background-medium);
   display: grid;
   grid-template: auto minmax(0, 1fr) / 214px minmax(0, 1fr) 310px;
   height: 100dvh;
   background: var(--workspace-bg);
   color: var(--text);
-  font-family: system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 0.875rem;
-}
-
-:root[data-theme="dark"] .workflow-app {
-  --workspace-bg: #151722;
-  --surface: #1c1f2c;
-  --surface-raised: #242838;
-  --surface-selected: #29314f;
-  --text: #eff1fb;
-  --text-secondary: #b2b9d0;
-  --line: #353950;
-  --accent: #aab7ff;
-  --graph-dot: #383e56;
-  --graph-link: #7988bd;
-  --saved: #77d9aa;
-  --blocked: #e9b693;
-  --error: #ffa5b4;
 }
 
 .app-header {
@@ -450,9 +436,8 @@
   margin-block: 0.45rem;
 }
 
-.workflow-form textarea {
+.workflow-form select {
   width: 100%;
-  resize: vertical;
   padding: 0.63rem 0.7rem;
   border: 1px solid var(--line);
   border-radius: 0.48rem;
@@ -511,7 +496,7 @@
   width: 100%;
 }
 
-.workflow-app :is(button, textarea, input):focus-visible {
+.workflow-app :is(button, input, select, summary):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

@@ -9,6 +9,11 @@ files:
   - out/**/*
   - resources/icon.png
   - package.json
+extraResources:
+  - from: node_modules/@fontsource-variable/geist/LICENSE
+    to: licenses/geist-OFL.txt
+  - from: node_modules/@fontsource-variable/geist-mono/LICENSE
+    to: licenses/geist-mono-OFL.txt
 mac:
   target: dmg
   icon: resources/icon.png

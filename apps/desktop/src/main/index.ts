@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { app, BrowserWindow, session } from "electron";
 import { productName } from "../../package.json";
+import { loadDevelopmentEnvironment } from "./environment";
+import { configureLogging, recordRendererConsole } from "./logging";
 import { registerWorkflowHandlers } from "./workflow-ipc";
 
 const smokeTest = process.argv.includes("--smoke-test");
@@ -37,6 +39,7 @@ async function createWindow(): Promise<void> {
   });
 
   const { webContents } = window;
+  recordRendererConsole(webContents);
   webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   webContents.on("will-frame-navigate", (event) => {
     if (!developmentUrl || !event.isMainFrame || event.url !== developmentUrl) {
@@ -62,7 +65,7 @@ async function createWindow(): Promise<void> {
         }, 10000);
         const readShell = () => {
           const canvas = document.querySelector("[data-workflow-canvas]");
-          if (!canvas?.querySelector(".react-flow__node") || !document.querySelector("#workflow-request")) return;
+          if (!canvas?.querySelector(".react-flow__node") || !document.querySelector('#jira-issue[aria-busy="false"]')) return;
           observer.disconnect();
           clearTimeout(timer);
           resolve({
@@ -74,7 +77,7 @@ async function createWindow(): Promise<void> {
           });
         };
         const observer = new MutationObserver(readShell);
-        observer.observe(document.documentElement, { childList: true, subtree: true });
+        observer.observe(document.documentElement, { childList: true, attributes: true, subtree: true });
         readShell();
       })
     `);
@@ -100,6 +103,7 @@ function reportStartupFailure(error: unknown): void {
 void app
   .whenReady()
   .then(async () => {
+    configureLogging();
     if (app.commandLine.hasSwitch("no-sandbox")) {
       throw new Error("Agent Desktop requires the Chromium sandbox");
     }
@@ -110,6 +114,9 @@ void app
     session.defaultSession.setDevicePermissionHandler(() => false);
     session.defaultSession.on("will-download", (event) => event.preventDefault());
 
+    if (!app.isPackaged) {
+      loadDevelopmentEnvironment(join(app.getAppPath(), "..", "..", ".env"));
+    }
     registerWorkflowHandlers(() => mainWindow);
     await createWindow();
     app.on("activate", () => {

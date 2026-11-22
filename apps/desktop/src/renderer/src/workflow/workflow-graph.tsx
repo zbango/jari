@@ -1,3 +1,4 @@
+import type { WorkflowPlan } from "@agent-desktop/shared";
 import { Button } from "@once-ui-system/core/components/Button";
 import { Icon } from "@once-ui-system/core/components/Icon";
 import {
@@ -20,6 +21,7 @@ type StageNodeData = {
   expanded: boolean;
   selected: boolean;
   hasWorkflow: boolean;
+  plan?: WorkflowPlan | undefined;
   select(): void;
   toggle(): void;
 };
@@ -37,7 +39,7 @@ type SectionNode = Node<
 
 function StageCard({ data }: NodeProps<StageNode>) {
   const stage = stages[data.stage];
-  const status = stageStatus(data.stage, data.hasWorkflow);
+  const status = stageStatus(data.stage, data.hasWorkflow, data.plan);
   return (
     <div className="workflow-node" data-selected={data.selected} data-stage={data.stage}>
       <Handle type="target" position={Position.Left} />
@@ -97,6 +99,7 @@ type GraphNode = StageNode | SectionNode;
 type Props = {
   selection: Selection;
   hasWorkflow: boolean;
+  plan?: WorkflowPlan | undefined;
   onSelect(selection: Selection): void;
 };
 
@@ -108,7 +111,7 @@ export function WorkflowGraph(props: Props) {
   );
 }
 
-function Canvas({ selection, hasWorkflow, onSelect }: Props) {
+function Canvas({ selection, hasWorkflow, plan, onSelect }: Props) {
   const [expanded, setExpanded] = useState<Partial<Record<Stage, boolean>>>({});
   const [focus, setFocus] = useState<Stage | null>(null);
   const overview = useRef<Viewport | null>(null);
@@ -163,6 +166,7 @@ function Canvas({ selection, hasWorkflow, onSelect }: Props) {
         expanded: Boolean(expanded[stage]),
         selected: selection.stage === stage && !selection.section,
         hasWorkflow,
+        plan,
         select: () => onSelect({ stage }),
         toggle: () => toggle(stage),
       },
