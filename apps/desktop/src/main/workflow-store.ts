@@ -4,19 +4,26 @@ import type {
   KnowledgeContext,
   KnowledgeNote,
   ProviderRunMetric,
+  ProviderTokenUsage,
   ProviderTranscriptEntry,
   WorkItem,
   WorkflowBuild,
+  WorkflowMilestone,
   WorkflowPlan,
   WorkflowRecord,
 } from "@agent-desktop/shared";
 import type { TranscriptWriter } from "./providers/types";
 
-type StoredWorkflow = Omit<WorkflowRecord, "source" | "plan" | "build" | "knowledge"> & {
+type StoredWorkflow = Omit<
+  WorkflowRecord,
+  "source" | "plan" | "build" | "knowledge" | "milestones" | "stageSettings"
+> & {
   source: string | null;
   plan: string | null;
   build: string | null;
   knowledge: string | null;
+  milestones: string | null;
+  stageSettings: string | null;
 };
 type StoredKnowledgeNote = Omit<KnowledgeNote, "paths"> & { paths: string };
 export type ProviderRunScope =
@@ -54,6 +61,14 @@ export function openWorkflowStore(path: string) {
         id TEXT PRIMARY KEY REFERENCES workflows(id),
         payload TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS workflow_milestones (
+        id TEXT PRIMARY KEY REFERENCES workflows(id),
+        payload TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS workflow_stage_settings (
+        id TEXT PRIMARY KEY REFERENCES workflows(id),
+        payload TEXT NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS workflow_transcript (
         sequence INTEGER PRIMARY KEY,
         workflow_id TEXT NOT NULL REFERENCES workflows(id),
@@ -79,6 +94,10 @@ export function openWorkflowStore(path: string) {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS workflow_provider_run_workflow
         ON workflow_provider_run (workflow_id);
+      CREATE TABLE IF NOT EXISTS workflow_provider_tokens (
+        run_id TEXT PRIMARY KEY REFERENCES workflow_provider_run(run_id),
+        payload TEXT NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS workflow_preferences (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -99,8 +118,15 @@ export function openWorkflowStore(path: string) {
     const removeIntake = db.prepare("DELETE FROM workflow_intake WHERE id = ?");
     const removeSnapshot = db.prepare("DELETE FROM workflow_knowledge WHERE id = ?");
     const removeBuild = db.prepare("DELETE FROM workflow_build WHERE id = ?");
+    const removeMilestones = db.prepare("DELETE FROM workflow_milestones WHERE id = ?");
+    const removeStageSettings = db.prepare("DELETE FROM workflow_stage_settings WHERE id = ?");
     const removeTranscript = db.prepare("DELETE FROM workflow_transcript WHERE workflow_id = ?");
     const removeRuns = db.prepare("DELETE FROM workflow_provider_run WHERE workflow_id = ?");
+    const removeRunTokens = db.prepare(`
+      DELETE FROM workflow_provider_tokens WHERE run_id IN (
+        SELECT run_id FROM workflow_provider_run WHERE workflow_id = ?
+      )
+    `);
     const insertRun = db.prepare(`
       INSERT INTO workflow_provider_run
         (run_id, workflow_id, phase, task_id, attempt, started_at, status)
@@ -111,9 +137,14 @@ export function openWorkflowStore(path: string) {
       WHERE run_id = ? AND status = 'running'
     `);
     const readRuns = db.prepare(`
-      SELECT run_id AS runId, phase, task_id AS taskId, attempt, started_at AS startedAt,
-        status, duration_ms AS durationMs
-      FROM workflow_provider_run WHERE workflow_id = ? ORDER BY rowid
+      SELECT r.run_id AS runId, phase, task_id AS taskId, attempt, started_at AS startedAt,
+        status, duration_ms AS durationMs, t.payload AS tokenPayload
+      FROM workflow_provider_run r LEFT JOIN workflow_provider_tokens t ON r.run_id = t.run_id
+      WHERE workflow_id = ? ORDER BY r.rowid
+    `);
+    const saveRunTokens = db.prepare(`
+      INSERT INTO workflow_provider_tokens (run_id, payload) VALUES (?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET payload = excluded.payload
     `);
     const appendTranscript = db.prepare(`
       INSERT INTO workflow_transcript
@@ -129,6 +160,14 @@ export function openWorkflowStore(path: string) {
     const update = db.prepare("UPDATE workflow_intake SET plan = ? WHERE id = ?");
     const saveBuild = db.prepare(`
       INSERT INTO workflow_build (id, payload) VALUES (?, ?)
+      ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+    `);
+    const saveMilestones = db.prepare(`
+      INSERT INTO workflow_milestones (id, payload) VALUES (?, ?)
+      ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+    `);
+    const saveStageSettings = db.prepare(`
+      INSERT INTO workflow_stage_settings (id, payload) VALUES (?, ?)
       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
     `);
     const insertSnapshot = db.prepare(
@@ -169,10 +208,13 @@ export function openWorkflowStore(path: string) {
     `);
     const list = db.prepare(`
       SELECT w.id, w.request, w.provider, w.workspace_path AS workspacePath,
-        w.created_at AS createdAt, i.source, i.plan, k.snapshot AS knowledge, b.payload AS build
+        w.created_at AS createdAt, i.source, i.plan, k.snapshot AS knowledge, b.payload AS build,
+        m.payload AS milestones, s.payload AS stageSettings
       FROM workflows w LEFT JOIN workflow_intake i ON i.id = w.id
       LEFT JOIN workflow_knowledge k ON k.id = w.id
       LEFT JOIN workflow_build b ON b.id = w.id
+      LEFT JOIN workflow_milestones m ON m.id = w.id
+      LEFT JOIN workflow_stage_settings s ON s.id = w.id
       ORDER BY w.rowid DESC
     `);
     return {
@@ -192,13 +234,17 @@ export function openWorkflowStore(path: string) {
       },
       list(): WorkflowRecord[] {
         return (list.all() as unknown as StoredWorkflow[]).map(
-          ({ source, plan, build, knowledge, ...record }) => ({
+          ({ source, plan, build, knowledge, milestones, stageSettings, ...record }) => ({
             ...record,
             ...(source && plan
               ? { source: JSON.parse(source) as WorkItem, plan: JSON.parse(plan) as WorkflowPlan }
               : {}),
             ...(knowledge ? { knowledge: JSON.parse(knowledge) as KnowledgeContext[] } : {}),
             ...(build ? { build: JSON.parse(build) as WorkflowBuild } : {}),
+            ...(milestones ? { milestones: JSON.parse(milestones) as WorkflowMilestone[] } : {}),
+            ...(stageSettings
+              ? { stageSettings: JSON.parse(stageSettings) as WorkflowRecord["stageSettings"] }
+              : {}),
           }),
         );
       },
@@ -213,6 +259,8 @@ export function openWorkflowStore(path: string) {
           }
           if (input.knowledge?.length) insertSnapshot.run(id, JSON.stringify(input.knowledge));
           if (input.build) saveBuild.run(id, JSON.stringify(input.build));
+          if (input.milestones?.length) saveMilestones.run(id, JSON.stringify(input.milestones));
+          if (input.stageSettings) saveStageSettings.run(id, JSON.stringify(input.stageSettings));
           db.exec("COMMIT");
         } catch (error) {
           db.exec("ROLLBACK");
@@ -229,7 +277,10 @@ export function openWorkflowStore(path: string) {
           removeIntake.run(id);
           removeSnapshot.run(id);
           removeBuild.run(id);
+          removeMilestones.run(id);
+          removeStageSettings.run(id);
           removeTranscript.run(id);
+          removeRunTokens.run(id);
           removeRuns.run(id);
           removeWorkflow.run(id);
           db.exec("COMMIT");
@@ -240,6 +291,12 @@ export function openWorkflowStore(path: string) {
       },
       saveBuild(id: string, build: WorkflowBuild): void {
         saveBuild.run(id, JSON.stringify(build));
+      },
+      saveMilestones(id: string, milestones: WorkflowMilestone[]): void {
+        saveMilestones.run(id, JSON.stringify(milestones));
+      },
+      saveStageSettings(id: string, settings: NonNullable<WorkflowRecord["stageSettings"]>): void {
+        saveStageSettings.run(id, JSON.stringify(settings));
       },
       transcriptWriter(id: string, run: ProviderRunScope, runId = randomUUID()): TranscriptWriter {
         return (kind, text) => {
@@ -275,7 +332,15 @@ export function openWorkflowStore(path: string) {
         updateRun.run(status, durationMs, runId);
       },
       providerRuns(id: string): ProviderRunMetric[] {
-        return readRuns.all(id) as unknown as ProviderRunMetric[];
+        const rows = readRuns.all(id) as unknown as (ProviderRunMetric & {
+          tokenPayload: string | null;
+        })[];
+        return rows.map(({ tokenPayload, ...run }) =>
+          tokenPayload ? { ...run, tokens: JSON.parse(tokenPayload) as ProviderTokenUsage } : run,
+        );
+      },
+      saveProviderTokens(runId: string, tokens: ProviderTokenUsage): void {
+        saveRunTokens.run(runId, JSON.stringify(tokens));
       },
       transcript(id: string, after = 0, limit = -1): ProviderTranscriptEntry[] {
         return readTranscript.all(id, after, limit) as unknown as ProviderTranscriptEntry[];

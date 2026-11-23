@@ -1,5 +1,12 @@
-import type { WorkflowBuild, WorkflowBuildTask, WorkflowPlan } from "@agent-desktop/shared";
-import { Button } from "@once-ui-system/core/components/Button";
+import type {
+  WorkflowBuild,
+  WorkflowBuildTask,
+  WorkflowMilestone,
+  WorkflowPlan,
+  WorkflowRecord,
+  WorkflowStageSettings,
+} from "@agent-desktop/shared";
+import { workflowSections } from "@agent-desktop/shared";
 import { Column } from "@once-ui-system/core/components/Column";
 import { Icon } from "@once-ui-system/core/components/Icon";
 import {
@@ -7,15 +14,21 @@ import {
   Controls,
   Handle,
   MarkerType,
+  MiniMap,
   Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
 } from "@xyflow/react";
-import type { Edge, Node, NodeProps, Viewport } from "@xyflow/react";
-import { useRef, useState } from "react";
+import type { Edge, FitViewOptions, Node, NodeProps, Viewport } from "@xyflow/react";
+import { useEffect, useRef, useState } from "react";
 import { buildTaskStatus, stageOrder, stages, stageStatus } from "./stages";
 import type { Selection, Stage, WorkflowStatusKind } from "./stages";
+import {
+  milestoneDisplayStatus,
+  milestoneIsBlocked,
+  milestoneTimings,
+} from "./workflow-milestones";
 
 type StageNodeData = {
   stage: Stage;
@@ -24,6 +37,7 @@ type StageNodeData = {
   hasWorkflow: boolean;
   plan?: WorkflowPlan | undefined;
   build?: WorkflowBuild;
+  settings?: Partial<WorkflowStageSettings>;
   select(): void;
   toggle(): void;
 };
@@ -34,6 +48,7 @@ type SectionNode = Node<
     name: string;
     shown: boolean;
     selected: boolean;
+    add?: boolean;
     select(): void;
   },
   "section"
@@ -47,9 +62,69 @@ type BuildTaskNode = Node<
   },
   "buildTask"
 >;
+type MilestoneNode = Node<
+  {
+    milestone: WorkflowMilestone;
+    blocked: boolean;
+    selected: boolean;
+    select(): void;
+  },
+  "milestone"
+>;
+type AddNode = Node<{ select(): void }, "addMilestone">;
+
+function MilestoneCard({ data }: NodeProps<MilestoneNode>) {
+  const { milestone, blocked, selected, select } = data;
+  const status = milestoneDisplayStatus(milestone, blocked);
+  return (
+    <div
+      className="workflow-node workflow-milestone-node"
+      data-selected={selected}
+      data-kind={status.kind}
+    >
+      <Handle type="target" position={Position.Left} />
+      <button
+        className="workflow-node-main nopan"
+        type="button"
+        aria-label={`Inspect milestone ${milestone.title}`}
+        aria-pressed={selected}
+        onClick={select}
+      >
+        <span className="milestone-timing">
+          {milestoneTimings[milestone.timing]}
+          {milestone.action === "checkpoint" && " · Checkpoint"}
+        </span>
+        <span className="workflow-node-title">
+          <span className="milestone-diamond" aria-hidden="true" />
+          <span className="milestone-title" title={milestone.title}>
+            {milestone.title}
+          </span>
+        </span>
+        <span className="workflow-status" data-kind={status.kind}>
+          <Icon name={status.icon} size="xs" decorative />
+          {status.label}
+        </span>
+      </button>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  );
+}
+
+function AddMilestoneCard({ data }: NodeProps<AddNode>) {
+  return (
+    <div className="workflow-add-node">
+      <Handle type="target" position={Position.Left} />
+      <button className="nopan" type="button" onClick={data.select}>
+        <Icon name="plus" size="s" decorative />
+        Add milestone
+      </button>
+    </div>
+  );
+}
 
 function StageCard({ data }: NodeProps<StageNode>) {
   const stage = stages[data.stage];
+  const title = data.settings?.title ?? stage.title;
   const status = stageStatus(data.stage, data.hasWorkflow, data.plan, data.build);
   return (
     <div
@@ -63,13 +138,17 @@ function StageCard({ data }: NodeProps<StageNode>) {
         className="workflow-node-main nopan"
         type="button"
         aria-pressed={data.selected}
-        aria-label={`Inspect ${stage.title}`}
+        aria-label={`Inspect ${title}`}
       >
         <span className="workflow-node-title">
           <Icon name={stage.icon} size="s" decorative />
-          {stage.title}
+          <span className="workflow-task-title" title={title}>
+            {title}
+          </span>
         </span>
-        <span className="workflow-node-description">{stage.description}</span>
+        <span className="workflow-node-description">
+          {data.settings?.description ?? stage.description}
+        </span>
       </button>
       <div className="workflow-node-footer">
         <span className="workflow-status" data-kind={status.kind}>
@@ -79,7 +158,7 @@ function StageCard({ data }: NodeProps<StageNode>) {
         <button
           className="graph-icon-button nopan"
           type="button"
-          aria-label={`${data.expanded ? "Collapse" : "Expand"} ${stage.title}`}
+          aria-label={`${data.expanded ? "Collapse" : "Expand"} ${title}`}
           aria-expanded={data.expanded}
           onClick={(event) => {
             event.stopPropagation();
@@ -99,14 +178,17 @@ function SectionCard({ data }: NodeProps<SectionNode>) {
   return (
     <div
       className="workflow-section"
+      data-add={data.add}
       data-shown={data.shown}
       aria-hidden={!data.shown}
       inert={!data.shown}
     >
       <Handle type="target" position={Position.Left} />
       <button className="nopan" type="button" aria-pressed={data.selected}>
-        <Icon name="document" size="xs" decorative />
-        {data.name}
+        <Icon name={data.add ? "plus" : "document"} size="xs" decorative />
+        <span className="workflow-task-title" title={data.name}>
+          {data.name}
+        </span>
       </button>
     </div>
   );
@@ -162,14 +244,23 @@ function flowLink(kind: WorkflowStatusKind, className: string, collapsed = false
   };
 }
 
-const nodeTypes = { stage: StageCard, section: SectionCard, buildTask: BuildTaskCard };
-type GraphNode = StageNode | SectionNode | BuildTaskNode;
+const nodeTypes = {
+  stage: StageCard,
+  section: SectionCard,
+  buildTask: BuildTaskCard,
+  milestone: MilestoneCard,
+  addMilestone: AddMilestoneCard,
+};
+type GraphNode = StageNode | SectionNode | BuildTaskNode | MilestoneNode | AddNode;
 type Props = {
   selection: Selection;
   hasWorkflow: boolean;
   plan?: WorkflowPlan | undefined;
   build?: WorkflowBuild;
+  milestones?: WorkflowMilestone[];
+  stageSettings?: WorkflowRecord["stageSettings"];
   onSelect(selection: Selection): void;
+  onAddMilestone(): void;
 };
 
 export function WorkflowGraph(props: Props) {
@@ -180,21 +271,46 @@ export function WorkflowGraph(props: Props) {
   );
 }
 
-function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
+function Canvas({
+  selection,
+  hasWorkflow,
+  plan,
+  build,
+  milestones = [],
+  stageSettings,
+  onSelect,
+  onAddMilestone,
+}: Props) {
   const [expanded, setExpanded] = useState<Partial<Record<Stage, boolean>>>({});
   const [focus, setFocus] = useState<Stage | null>(null);
   const overview = useRef<Viewport | null>(null);
   const flow = useReactFlow<GraphNode>();
   const tasks = build?.tasks ?? [];
+  const before = milestones.filter(({ timing }) => timing === "before-build");
+  const after = milestones.filter(({ timing }) => timing === "after-build");
+  const followUps = milestones.filter(({ timing }) => timing === "follow-up");
+  const path = ["idea", "plan", ...before, "build", ...after, ...followUps] as const;
+  const pathIds = path.map((entry) =>
+    typeof entry === "string" ? entry : `milestone:${entry.id}`,
+  );
+  const pathKey = pathIds.join("/");
+  const previousPath = useRef(pathKey);
 
-  function isExpanded(stage: Stage) {
-    return expanded[stage] ?? (stage === "build" && tasks.length > 0);
+  function isExpanded(stage: Stage, selected = selection) {
+    const preference = stageSettings?.[stage]?.expandDetails;
+    if (expanded[stage] !== undefined) return expanded[stage];
+    if (preference && preference !== "default") return preference === "expanded";
+    return (
+      (selected.stage === stage && !selected.milestoneId) || (stage === "build" && tasks.length > 0)
+    );
   }
 
   function sectionIds(stage: Stage) {
-    return stage === "build" && tasks.length
-      ? tasks.map(({ id }) => `build:task-${id}`)
-      : Object.keys(stages[stage].sections).map((section) => `${stage}:${section}`);
+    return [
+      ...(stage === "build" ? tasks.map(({ id }) => `build:task-${id}`) : []),
+      ...workflowSections(stage, stageSettings).map(({ id }) => `${stage}:${id}`),
+      `${stage}:new`,
+    ];
   }
 
   function toggle(stage: Stage) {
@@ -212,7 +328,7 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
       }
       setFocus(stage);
       onSelect({ stage });
-      const visibleNodes = isExpanded(stage) ? [stage, ...sectionIds(stage)] : [stage];
+      const visibleNodes = isExpanded(stage, { stage }) ? [stage, ...sectionIds(stage)] : [stage];
       void flow.fitView({
         nodes: visibleNodes.map((id) => ({ id })),
         maxZoom: 1.25,
@@ -229,8 +345,8 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
 
   const nodes: GraphNode[] = [];
   const edges: Edge[] = [];
-  for (const [index, stage] of stageOrder.entries()) {
-    const x = index * 256;
+  for (const stage of stageOrder) {
+    const x = pathIds.indexOf(stage) * 256;
     const shown = focus === null || focus === stage;
     nodes.push({
       id: stage,
@@ -242,25 +358,20 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
       data: {
         stage,
         expanded: isExpanded(stage),
-        selected: selection.stage === stage && !selection.section && !selection.taskId,
+        selected:
+          selection.stage === stage &&
+          !selection.section &&
+          !selection.taskId &&
+          !selection.milestoneId,
         hasWorkflow,
         plan,
         build,
+        settings: stageSettings?.[stage],
         select: () => onSelect({ stage }),
         toggle: () => toggle(stage),
       },
     });
 
-    const nextStage = stageOrder[index + 1];
-    if (nextStage && !focus) {
-      edges.push({
-        id: `${stage}-${nextStage}`,
-        source: stage,
-        target: nextStage,
-        type: "straight",
-        ...flowLink(stageStatus(nextStage, hasWorkflow, plan, build).kind, "workflow-stage-link"),
-      });
-    }
     if (stage === "build" && tasks.length) {
       for (const [index, task] of tasks.entries()) {
         const id = `build:task-${task.id}`;
@@ -289,20 +400,22 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
           ...flowLink(buildTaskStatus[task.state].kind, "workflow-section-link", !expanded),
         });
       }
-      continue;
     }
-    for (const [row, [section, name]] of Object.entries(stages[stage].sections).entries()) {
+    const details = [...workflowSections(stage, stageSettings), { id: "new", title: "Add detail" }];
+    const detailsY = 166 + (stage === "build" ? tasks.length * 76 : 0);
+    for (const [row, { id: section, title: name }] of details.entries()) {
       const id = `${stage}:${section}`;
       nodes.push({
         id,
         type: "section",
-        position: { x: x + 26, y: 166 + row * 47 },
+        position: { x: x + 26, y: detailsY + row * 47 },
         width: 174,
         height: 36,
         hidden: !shown,
         data: {
           name,
-          shown: Boolean(expanded[stage]),
+          add: section === "new",
+          shown: isExpanded(stage),
           selected: selection.stage === stage && selection.section === section,
           select: () => onSelect({ stage, section }),
         },
@@ -313,35 +426,99 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
         sourceHandle: "sections",
         target: id,
         type: "smoothstep",
-        className: expanded[stage] ? "workflow-section-link" : "workflow-section-link is-collapsed",
+        className: isExpanded(stage)
+          ? "workflow-section-link"
+          : "workflow-section-link is-collapsed",
       });
     }
   }
 
+  const workflow = { build, milestones };
+  for (const [index, entry] of path.entries()) {
+    const id = pathIds[index]!;
+    const previous = pathIds[index - 1];
+    const blocked = typeof entry !== "string" && milestoneIsBlocked(workflow, entry);
+    if (typeof entry !== "string") {
+      nodes.push({
+        id,
+        type: "milestone",
+        position: { x: index * 256, y: 0 },
+        width: 200,
+        height: 122,
+        hidden: focus !== null,
+        data: {
+          milestone: entry,
+          blocked,
+          selected: selection.milestoneId === entry.id,
+          select: () => onSelect({ stage: "build", milestoneId: entry.id }),
+        },
+      });
+    }
+    if (previous && !focus) {
+      const kind =
+        typeof entry === "string"
+          ? stageStatus(entry, hasWorkflow, plan, build).kind
+          : milestoneDisplayStatus(entry, blocked).kind;
+      edges.push({
+        id: `${previous}-${id}`,
+        source: previous,
+        target: id,
+        type: "straight",
+        ...flowLink(kind, "workflow-stage-link"),
+      });
+    }
+  }
+  nodes.push({
+    id: "add-milestone",
+    type: "addMilestone",
+    position: { x: path.length * 256, y: 37 },
+    width: 156,
+    height: 48,
+    hidden: focus !== null,
+    data: { select: onAddMilestone },
+  });
+  if (!focus) {
+    edges.push({
+      id: "milestone-continuation",
+      source: pathIds[pathIds.length - 1]!,
+      target: "add-milestone",
+      type: "straight",
+      className: "workflow-stage-link workflow-continuation",
+    });
+  }
+
   const visibleNodes = nodes.filter(
-    (node) => !node.hidden && (node.type === "stage" || node.data.shown),
+    (node) => !node.hidden && (!("shown" in node.data) || node.data.shown),
   );
-  const fitViewOptions = {
+  const fitViewOptions: FitViewOptions<GraphNode> = {
     nodes: visibleNodes.map(({ id }) => ({ id })),
-    padding: 0.19,
+    padding: "24px",
     maxZoom: 1.08,
   };
+  const overviewFit = useRef(fitViewOptions);
+  useEffect(() => {
+    overviewFit.current = fitViewOptions;
+  });
+
+  useEffect(() => {
+    if (previousPath.current === pathKey) return;
+    previousPath.current = pathKey;
+    if (!focus) void flow.fitView(overviewFit.current);
+  }, [flow, focus, pathKey]);
 
   return (
     <section className="workflow-canvas" aria-label="Workflow canvas" data-workflow-canvas>
       <div className="canvas-toolbar" role="group" aria-label="Focus workflow stage">
         {([null, ...stageOrder] as const).map((stage) => (
-          <Button
+          <button
             key={stage ?? "overview"}
             type="button"
-            variant="ghost"
-            size="s"
             className={focus === stage ? "view-tab is-selected" : "view-tab"}
             aria-pressed={focus === stage}
             onClick={() => changeFocus(stage)}
           >
-            {stage ? stages[stage].title : "Overview"}
-          </Button>
+            {stage ? (stageSettings?.[stage]?.title ?? stages[stage].title) : "Overview"}
+          </button>
         ))}
       </div>
       <ReactFlow
@@ -349,6 +526,7 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
         edges={edges}
         nodeTypes={nodeTypes}
         onNodeClick={(_, node) => {
+          if (node.type === "milestone" || node.type === "addMilestone") return;
           if (node.type === "stage" || node.data.shown) node.data.select();
         }}
         nodesDraggable={false}
@@ -365,6 +543,22 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
       >
         <Background gap={21} size={1.3} color="var(--graph-dot)" />
         <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
+        {milestones.length >= 2 && !focus && (
+          <MiniMap
+            className="workflow-minimap"
+            ariaLabel="Workflow map"
+            nodeColor={(node) =>
+              "shown" in node.data && !node.data.shown
+                ? "transparent"
+                : node.type === "milestone" && node.data.selected
+                  ? "var(--accent)"
+                  : "var(--graph-link)"
+            }
+            maskColor="var(--surface-selected)"
+            pannable
+            zoomable
+          />
+        )}
       </ReactFlow>
     </section>
   );

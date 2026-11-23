@@ -13,10 +13,10 @@ import { SegmentedControl } from "@once-ui-system/core/components/SegmentedContr
 import { Setting } from "@once-ui-system/core/components/Setting";
 import { Tab, TabList, TabPanel, Tabs } from "@once-ui-system/core/components/Tabs";
 import { Text } from "@once-ui-system/core/components/Text";
-import { ThemeSwitcher } from "@once-ui-system/core/components/ThemeSwitcher";
 import { useContext, useEffect, useRef, useState } from "react";
 import icon from "../../../resources/icon.png?url";
 import { MascotSettings } from "./mascot-settings";
+import { ThemeSettings } from "./theme-settings";
 import { MascotDesignContext } from "./workflow/provider-activity";
 import { workflowError } from "./workflow/workflow-error";
 
@@ -104,6 +104,7 @@ export function SettingsPage({
 
           <Tabs
             defaultValue="appearance"
+            fillWidth
             orientation={maxWidth("s") ? "horizontal" : "vertical"}
             gap="24"
             vertical="start"
@@ -132,23 +133,8 @@ export function SettingsPage({
               </Tab>
             </TabList>
 
-            <TabPanel
-              value="appearance"
-              background="surface"
-              border
-              radius="l"
-              padding="24"
-              gap="16"
-            >
-              <Heading as="h2" textVariant="display-strong-xs">
-                Appearance
-              </Heading>
-              <Setting
-                label="Theme"
-                description="Choose light, dark, or follow your system setting."
-              >
-                <ThemeSwitcher aria-label="Theme" semantics="radio" />
-              </Setting>
+            <TabPanel value="appearance" fillWidth minWidth="0">
+              <ThemeSettings />
             </TabPanel>
 
             <TabPanel value="mascot" background="surface" border radius="l" padding="24">

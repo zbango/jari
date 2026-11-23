@@ -1,4 +1,4 @@
-import { maxPlanAnswerLength } from "@agent-desktop/shared";
+import { maxPlanAnswerLength, nextManualMilestone } from "@agent-desktop/shared";
 import type {
   BuildTaskReviewInput,
   WorkflowApi,
@@ -323,6 +323,7 @@ export function WorkflowBuildContent({
   startBuild,
   reviewTask,
   readCommitDiff,
+  openMilestone,
 }: {
   workflow: WorkflowRecord;
   taskId?: string;
@@ -330,6 +331,7 @@ export function WorkflowBuildContent({
   startBuild(commitBaseline?: boolean): Promise<void>;
   reviewTask(input: BuildTaskReviewInput): Promise<void>;
   readCommitDiff: WorkflowApi["readBuildCommitDiff"];
+  openMilestone(id: string): void;
 }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
@@ -351,14 +353,20 @@ export function WorkflowBuildContent({
 
   if (!build)
     return (
-      <Column gap="8">
-        <Text as="p">Build requires an approved plan. No execution has started.</Text>
+      <Feedback
+        tone="warning"
+        role="note"
+        aria-live="off"
+        icon="lock"
+        title="Plan approval required"
+        description="Build requires an approved plan. No execution has started."
+      >
         {workflow.plan?.state === "ready" && (
-          <Button type="button" variant="secondary" onClick={openPlanReview}>
+          <Button type="button" size="s" suffixIcon="arrowRight" onClick={openPlanReview}>
             Review plan
           </Button>
         )}
-      </Column>
+      </Feedback>
     );
 
   const tasks = build.tasks ?? [];
@@ -366,6 +374,7 @@ export function WorkflowBuildContent({
   const selected = tasks.find(({ id }) => id === taskId) ?? active ?? tasks.at(-1);
   const showStart =
     build.state === "ready" || build.state === "failed" || build.state === "interrupted";
+  const waiting = showStart ? nextManualMilestone(workflow) : undefined;
 
   return (
     <Column gap="12">
@@ -392,7 +401,14 @@ export function WorkflowBuildContent({
           showHeading={!taskId}
         />
       )}
-      {showStart && (!selected || selected.id === active?.id) && (
+      {waiting && (
+        <Feedback tone="warning" description={`Complete ${waiting.title} before starting Build.`}>
+          <Button type="button" variant="secondary" onClick={() => openMilestone(waiting.id)}>
+            Open milestone
+          </Button>
+        </Feedback>
+      )}
+      {showStart && !waiting && (!selected || selected.id === active?.id) && (
         <>
           {build.state === "failed" && (
             <Feedback

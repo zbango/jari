@@ -5,23 +5,18 @@ import type {
   WorkflowApi,
   WorkflowRecord,
 } from "@agent-desktop/shared";
+import { ChatMessage, ChatMessageList, TypingIndicator } from "@once-ui-system/core";
 import { Accordion } from "@once-ui-system/core/components/Accordion";
 import { Button } from "@once-ui-system/core/components/Button";
+import { Card } from "@once-ui-system/core/components/Card";
 import { Column } from "@once-ui-system/core/components/Column";
 import { Feedback } from "@once-ui-system/core/components/Feedback";
+import { Line } from "@once-ui-system/core/components/Line";
 import { Row } from "@once-ui-system/core/components/Row";
+import { Tag } from "@once-ui-system/core/components/Tag";
 import { Text } from "@once-ui-system/core/components/Text";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ProviderActivity } from "./provider-activity";
+import { useEffect, useId, useRef, useState } from "react";
 import { workflowError } from "./workflow-error";
-
-const messageLabels = {
-  instructions: "Provider instructions",
-  user: "Prompt sent",
-  assistant: "Provider message",
-  result: "Provider result",
-  session: "Provider session ID",
-} satisfies Record<ProviderTranscriptEntry["kind"], string>;
 
 const runStatus = {
   running: "Running",
@@ -29,6 +24,7 @@ const runStatus = {
   failed: "Failed",
   interrupted: "Interrupted",
 } satisfies Record<ProviderRunMetric["status"], string>;
+const tokenCount = new Intl.NumberFormat();
 
 function formatDuration(ms: number) {
   if (ms < 1000) return `${ms} ms`;
@@ -59,23 +55,113 @@ function ProviderTimings({ runs }: { runs: ProviderRunMetric[] }) {
         border="neutral-alpha-weak"
       >
         {runs.map((run) => (
-          <Row key={run.runId} gap="8" wrap horizontal="between" vertical="center">
-            <Text textVariant="body-default-s">
-              {run.taskId === null
-                ? run.phase
-                : `${run.phase} · Task ${run.taskId} · Attempt ${run.attempt}`}
-            </Text>
-            <Text
-              textVariant="label-default-s"
-              onBackground={run.status === "failed" ? "danger-strong" : "neutral-weak"}
-            >
-              {runStatus[run.status]} ·{" "}
-              {run.durationMs === null ? "Duration unavailable" : formatDuration(run.durationMs)}
-            </Text>
-          </Row>
+          <Column key={run.runId} gap="4" fillWidth>
+            <Row gap="8" wrap horizontal="between" vertical="center">
+              <Text textVariant="body-default-s">
+                {run.taskId === null
+                  ? run.phase
+                  : `${run.phase} · Task ${run.taskId} · Attempt ${run.attempt}`}
+              </Text>
+              <Text
+                textVariant="label-default-s"
+                onBackground={run.status === "failed" ? "danger-strong" : "neutral-weak"}
+              >
+                {runStatus[run.status]} ·{" "}
+                {run.durationMs === null ? "Duration unavailable" : formatDuration(run.durationMs)}
+              </Text>
+            </Row>
+            <Row gap="8" wrap>
+              {run.tokens ? (
+                <>
+                  <Tag size="s" label={`${tokenCount.format(run.tokens.input)} input tokens`} />
+                  <Tag size="s" label={`${tokenCount.format(run.tokens.output)} output tokens`} />
+                  {!!run.tokens.cacheRead && (
+                    <Tag
+                      size="s"
+                      label={`${tokenCount.format(run.tokens.cacheRead)} cached input tokens`}
+                    />
+                  )}
+                  {!!run.tokens.cacheWrite && (
+                    <Tag
+                      size="s"
+                      label={`${tokenCount.format(run.tokens.cacheWrite)} cache write tokens`}
+                    />
+                  )}
+                  {!!run.tokens.reasoning && (
+                    <Tag
+                      size="s"
+                      label={`${tokenCount.format(run.tokens.reasoning)} reasoning tokens`}
+                    />
+                  )}
+                  {!!run.tokens.contextWindow && (
+                    <Tag
+                      size="s"
+                      label={`${tokenCount.format(run.tokens.contextWindow)} token context window`}
+                    />
+                  )}
+                </>
+              ) : (
+                <Text textVariant="label-default-s" onBackground="neutral-weak">
+                  {run.status === "running" ? "Waiting for token usage" : "Token usage unavailable"}
+                </Text>
+              )}
+            </Row>
+          </Column>
         ))}
       </Column>
     </Column>
+  );
+}
+
+function transcriptMessage(
+  { sequence, kind, text, createdAt }: ProviderTranscriptEntry,
+  provider: string,
+) {
+  const body = (
+    <Text as="p" textVariant="body-default-s" className="request-body">
+      {text}
+    </Text>
+  );
+  if (kind === "instructions" || kind === "session") {
+    return (
+      <Accordion
+        key={sequence}
+        title={kind === "instructions" ? "Provider instructions" : "Provider session ID"}
+        titleVariant="label-default-s"
+      >
+        {body}
+      </Accordion>
+    );
+  }
+
+  const outgoing = kind === "user";
+  const hasLongPrompt = outgoing && text.length > 400;
+  return (
+    <ChatMessage
+      key={sequence}
+      from={outgoing ? "self" : "other"}
+      name={outgoing ? "Workflow" : provider}
+      time={new Date(createdAt)}
+      avatarProps={{ size: "s", icon: outgoing ? "grid" : "code" }}
+    >
+      {hasLongPrompt ? (
+        <Column gap="8">
+          <Text as="p" textVariant="body-default-s" className="request-body">
+            {text.slice(0, 240).trimEnd()}…
+          </Text>
+          <Accordion title="Full prompt" titleVariant="label-default-s">
+            {body}
+          </Accordion>
+        </Column>
+      ) : kind === "result" ? (
+        <Column gap="8">
+          <Tag label="Result" size="s" tone="accent" dot={false} />
+          {body}
+        </Column>
+      ) : (
+        body
+      )}
+    </ChatMessage>
   );
 }
 
@@ -102,8 +188,6 @@ function MessageFeed({
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const cursor = useRef(0);
-  const scrollArea = useRef<HTMLDivElement>(null);
-  const follow = useRef(true);
 
   useEffect(() => {
     let active = true;
@@ -142,14 +226,8 @@ function MessageFeed({
     };
   }, [live, phase, readTranscript, retry, taskId, workflowId]);
 
-  useLayoutEffect(() => {
-    const area = scrollArea.current;
-    if (area && follow.current) area.scrollTop = area.scrollHeight;
-  }, [entries]);
-
   return (
     <Column id={id} gap="8" fillWidth>
-      {live && <ProviderActivity label={`Listening to ${provider}…`} state="listening" />}
       {error && (
         <Feedback tone="danger" description={error}>
           <Button type="button" size="s" variant="secondary" onClick={() => setRetry(retry + 1)}>
@@ -157,67 +235,52 @@ function MessageFeed({
           </Button>
         </Feedback>
       )}
-      {!!runs.length && <ProviderTimings runs={runs} />}
-      {!error && entries.length === 0 && (
+      {!error && !live && entries.length === 0 && (
         <Text textVariant="body-default-s" onBackground="neutral-weak">
           {!loaded
             ? "Loading provider messages…"
-            : live
-              ? "Waiting for the first message."
-              : "This workflow has no recorded provider messages."}
+            : "This workflow has no recorded provider messages."}
         </Text>
       )}
-      {!!entries.length && (
-        <Column
-          ref={scrollArea}
-          role="region"
+      {(entries.length > 0 || live) && (
+        <ChatMessageList
           aria-label="Provider session messages"
-          tabIndex={0}
           fillWidth
-          maxHeight="24rem"
-          overflowY="auto"
+          fillHeight={false}
+          maxHeight="min(54vh, 32rem)"
           padding="12"
-          gap="12"
-          radius="m"
-          border="neutral-alpha-weak"
-          onScroll={(event) => {
-            const area = event.currentTarget;
-            follow.current = area.scrollHeight - area.scrollTop - area.clientHeight < 24;
-          }}
+          radius="l"
+          background="page"
+          border
+          stack
         >
-          {entries.map((entry, index) => {
-            const { phase, taskId, attempt, kind, text } = entry;
-            const startsRun = entry.runId !== entries[index - 1]?.runId;
-            const label = messageLabels[kind];
-            const body = (
-              <Text as="p" textVariant="body-default-s" className="request-body">
-                {text}
-              </Text>
-            );
-            return (
-              <Column key={entry.sequence} gap="4" fillWidth>
-                {startsRun && (
-                  <Text textVariant="label-strong-s">
-                    {taskId === null ? phase : `${phase} · Task ${taskId} · Attempt ${attempt}`}
-                  </Text>
-                )}
-                {kind === "assistant" || kind === "result" ? (
-                  <>
-                    <Text textVariant="label-default-s" onBackground="neutral-weak">
-                      {label}
-                    </Text>
-                    {body}
-                  </>
-                ) : (
-                  <Accordion title={label} titleVariant="label-default-s">
-                    {body}
-                  </Accordion>
-                )}
-              </Column>
-            );
+          {entries.flatMap((entry, index) => {
+            const message = transcriptMessage(entry, provider);
+            if (entry.runId === entries[index - 1]?.runId) return [message];
+            const { phase, taskId, attempt } = entry;
+            return [
+              <Row key={`run-${entry.sequence}`} gap="8" vertical="center" fillWidth>
+                <Line flex={1} />
+                <Text textVariant="label-default-s" onBackground="neutral-weak">
+                  {taskId === null ? phase : `${phase} · Task ${taskId} · Attempt ${attempt}`}
+                </Text>
+                <Line flex={1} />
+              </Row>,
+              message,
+            ];
           })}
-        </Column>
+          {live && (
+            <TypingIndicator
+              label={
+                runs.some(({ status }) => status === "running")
+                  ? `${provider} is working…`
+                  : "Waiting for provider updates…"
+              }
+            />
+          )}
+        </ChatMessageList>
       )}
+      {!!runs.length && <ProviderTimings runs={runs} />}
     </Column>
   );
 }
@@ -229,6 +292,7 @@ export function ProviderMessages({
   taskId,
   readTranscript,
   exportTranscript,
+  inInspector = false,
 }: {
   workflow: WorkflowRecord;
   live: boolean;
@@ -236,9 +300,43 @@ export function ProviderMessages({
   taskId?: string;
   readTranscript: WorkflowApi["readTranscript"];
   exportTranscript(id: string): Promise<void>;
+  inInspector?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const feed = (open || inInspector) && (
+    <MessageFeed
+      key={`${workflow.id}:${phase ?? ""}:${taskId ?? ""}`}
+      id={id}
+      provider={workflowProviders[workflow.provider]}
+      workflowId={workflow.id}
+      live={live}
+      phase={phase}
+      taskId={taskId}
+      readTranscript={readTranscript}
+    />
+  );
+  if (inInspector) {
+    return (
+      <Card fillWidth direction="column" padding="16" gap="16" radius="l">
+        <Row fillWidth gap="8" horizontal="between" vertical="center" wrap>
+          <Text as="h3" textVariant="heading-strong-xs">
+            Provider messages
+          </Text>
+          <Button
+            type="button"
+            size="s"
+            variant="secondary"
+            prefixIcon="download"
+            onClick={() => void exportTranscript(workflow.id)}
+          >
+            Export provider transcript
+          </Button>
+        </Row>
+        {feed}
+      </Card>
+    );
+  }
   return (
     <Column gap="8" fillWidth>
       <Row gap="8" wrap>
@@ -261,18 +359,7 @@ export function ProviderMessages({
           Export provider transcript
         </Button>
       </Row>
-      {open && (
-        <MessageFeed
-          key={`${workflow.id}:${phase ?? ""}:${taskId ?? ""}`}
-          id={id}
-          provider={workflowProviders[workflow.provider]}
-          workflowId={workflow.id}
-          live={live}
-          phase={phase}
-          taskId={taskId}
-          readTranscript={readTranscript}
-        />
-      )}
+      {feed}
     </Column>
   );
 }

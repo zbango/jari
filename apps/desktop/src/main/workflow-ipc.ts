@@ -1,20 +1,29 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { realpath, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import {
   isWorkflowProvider,
   maxPlanAnswerLength,
+  milestoneRequiresManualAction,
+  nextManualMilestone,
+  pendingMilestones,
   simulatedIssueLimits,
   workflowChannels,
+  workflowSections,
+  workflowSectionSources,
 } from "@agent-desktop/shared";
 import type {
   CustomPlanOptions,
   ProviderRunMetric,
+  ProviderQuotaSnapshot,
   WorkItem,
   WorkflowBuild,
   WorkflowBuildTask,
+  WorkflowMilestone,
   WorkflowPlan,
+  WorkflowProvider,
+  WorkflowSectionChange,
   WorkflowRecord,
 } from "@agent-desktop/shared";
 import { app, dialog, ipcMain, shell } from "electron";
@@ -24,8 +33,15 @@ import { openCursor } from "./cursor";
 import { readAtlassianConfig } from "./environment";
 import { createJiraCache, jiraReply } from "./jira-cache";
 import { readKnowledgeNote, readKnowledgeNoteIds } from "./knowledge";
-import { generatePlanReview, getPlanningOptions, runBuild, runPlanning } from "./planner";
+import {
+  generatePlanReview,
+  getPlanningOptions,
+  readProviderQuota,
+  runBuild,
+  runPlanning,
+} from "./planner";
 import type { TranscriptWriter } from "./providers/types";
+import { readMilestoneInput, readStageSettings, runWorkflowCommand } from "./workflow-command";
 import {
   captureTaskChanges,
   commitTaskChanges,
@@ -141,6 +157,9 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
   const running = new Map<string, AbortController>();
   const building = new Map<string, { path: string; control: AbortController }>();
   const providerRuns = new Map<string, number>();
+  const quotaRequests = new Map<WorkflowProvider, Promise<ProviderQuotaSnapshot>>();
+  const quotaCache = new Map<WorkflowProvider, ProviderQuotaSnapshot>();
+  const quotaControl = new AbortController();
   let shuttingDown = false;
   let store: ReturnType<typeof openWorkflowStore> | undefined;
   const readJira = createJiraCache(getStore);
@@ -172,9 +191,18 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     providerRuns.set(runId, started);
     let status: "completed" | "failed" = "failed";
     try {
-      const result = await call((kind, text) => {
+      const transcript: TranscriptWriter = (kind, text) => {
         if (!shuttingDown) write(kind, text);
-      });
+      };
+      transcript.reportTokens = (usage) => {
+        if (shuttingDown) return;
+        try {
+          database.saveProviderTokens(runId, usage);
+        } catch (error) {
+          console.error("Saving provider token usage failed", error);
+        }
+      };
+      const result = await call(transcript);
       if (!failed?.(result)) status = "completed";
       return result;
     } finally {
@@ -271,6 +299,17 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
             getStore().saveBuild(record.id, record.build);
           }
           if (
+            !building.has(record.id) &&
+            record.milestones?.some(({ state }) => state === "running")
+          ) {
+            record.milestones = record.milestones.map((milestone) =>
+              milestone.state === "running"
+                ? { ...milestone, state: "interrupted", message: "The command was interrupted." }
+                : milestone,
+            );
+            getStore().saveMilestones(record.id, record.milestones);
+          }
+          if (
             record.build &&
             record.build.state !== "completed" &&
             !record.build.tasks &&
@@ -294,6 +333,28 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
       throw new Error("Wait for this workflow to finish before deleting it.");
     }
     getStore().removeWorkflow(id);
+  });
+
+  ipcMain.handle(workflowChannels.providerQuota, (event, provider: unknown) => {
+    trustedWindow(event);
+    if (!isWorkflowProvider(provider)) throw new Error("Select a supported provider.");
+    const pending = quotaRequests.get(provider);
+    if (pending) return pending;
+    const cached = quotaCache.get(provider);
+    if (cached && Date.now() - cached.checkedAt < 10_000) return cached;
+    const directory = join(app.getPath("userData"), "provider-usage");
+    mkdirSync(directory, { recursive: true });
+    const signal = AbortSignal.any([AbortSignal.timeout(15_000), quotaControl.signal]);
+    const request = readProviderQuota(provider, directory, signal)
+      .catch(() => [])
+      .then((windows): ProviderQuotaSnapshot => {
+        const snapshot = { checkedAt: Date.now(), windows };
+        quotaCache.set(provider, snapshot);
+        return snapshot;
+      })
+      .finally(() => quotaRequests.delete(provider));
+    quotaRequests.set(provider, request);
+    return request;
   });
 
   ipcMain.handle(workflowChannels.readTranscript, (event, id: unknown, after: unknown) => {
@@ -338,10 +399,15 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
       const scope = taskId === null ? phase : `${phase} · Task ${taskId} · Attempt ${attempt}`;
       return `[${createdAt}] ${scope} · ${runId} · ${kind}\n${text}`;
     });
-    const timing = runs.map(({ startedAt, phase, taskId, attempt, runId, status, durationMs }) => {
-      const scope = taskId === null ? phase : `${phase} · Task ${taskId} · Attempt ${attempt}`;
-      return `[${startedAt}] ${scope} · ${runId} · ${status} · ${durationMs === null ? "Duration unavailable" : `${durationMs} ms`}`;
-    });
+    const timing = runs.map(
+      ({ startedAt, phase, taskId, attempt, runId, status, durationMs, tokens }) => {
+        const scope = taskId === null ? phase : `${phase} · Task ${taskId} · Attempt ${attempt}`;
+        const usage = tokens
+          ? ` · ${tokens.input} input tokens · ${tokens.output} output tokens`
+          : "";
+        return `[${startedAt}] ${scope} · ${runId} · ${status} · ${durationMs === null ? "Duration unavailable" : `${durationMs} ms`}${usage}`;
+      },
+    );
     await writeFile(
       filePath,
       `Workflow ${record.id} · ${record.provider}\n\n${timing.length ? `Provider call durations\n${timing.join("\n")}\n\n` : ""}${messages.join("\n\n")}\n`,
@@ -608,6 +674,240 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     return { ...record, build };
   });
 
+  function milestoneWorkflow(id: unknown) {
+    const record = getStore()
+      .list()
+      .find((item) => item.id === id);
+    if (!record) throw new Error("Select a saved workflow.");
+    if (building.has(record.id)) throw new Error("Wait for workspace execution to finish.");
+    return record;
+  }
+
+  function checkMilestoneEdit(record: WorkflowRecord, milestone?: WorkflowMilestone) {
+    if (milestone?.state === "completed") throw new Error("This milestone has already completed.");
+    if (
+      milestone?.timing === "before-build" &&
+      (record.build?.state === "review" ||
+        record.build?.state === "completed" ||
+        record.build?.tasks?.some(({ state }) => state === "approved"))
+    ) {
+      throw new Error("Before Build hooks must be configured before the first task is reviewed.");
+    }
+  }
+
+  ipcMain.handle(
+    workflowChannels.saveStageSettings,
+    (event, id: unknown, stage: unknown, input: unknown) => {
+      trustedWindow(event);
+      if (stage !== "idea" && stage !== "plan" && stage !== "build") {
+        throw new Error("Select a workflow milestone.");
+      }
+      const database = getStore();
+      const record = database.list().find((item) => item.id === id);
+      if (!record) throw new Error("Select a saved workflow.");
+      const stageSettings = {
+        ...record.stageSettings,
+        [stage]: { ...record.stageSettings?.[stage], ...readStageSettings(input) },
+      };
+      database.saveStageSettings(record.id, stageSettings);
+      return { ...record, stageSettings };
+    },
+  );
+
+  ipcMain.handle(
+    workflowChannels.editWorkflowSection,
+    (event, id: unknown, stage: unknown, value: unknown) => {
+      trustedWindow(event);
+      if (stage !== "idea" && stage !== "plan" && stage !== "build")
+        throw new Error("Select a workflow milestone.");
+      const database = getStore();
+      const record = database.list().find((entry) => entry.id === id);
+      if (!record) throw new Error("Select a saved workflow.");
+      if (!value || typeof value !== "object") throw new Error("Choose a canvas detail to edit.");
+      const change = value as WorkflowSectionChange;
+      const sections = [...workflowSections(stage, record.stageSettings)];
+      const index = sections.findIndex((section) => section.id === change.id);
+      if (change.id !== null && index === -1)
+        throw new Error("This canvas detail no longer exists.");
+      if (change.action === "remove" && index >= 0) {
+        sections.splice(index, 1);
+      } else if (change.action === "save" && change.input && typeof change.input === "object") {
+        const { source, title, notes } = change.input;
+        if (
+          typeof source !== "string" ||
+          (source !== "note" && !Object.hasOwn(workflowSectionSources[stage], source))
+        ) {
+          throw new Error("Choose a supported detail type.");
+        }
+        if (
+          source !== "note" &&
+          sections.some((section, offset) => offset !== index && section.source === source)
+        ) {
+          throw new Error("This view is already on the milestone.");
+        }
+        if (
+          typeof title !== "string" ||
+          !title.trim() ||
+          title.length > 80 ||
+          typeof notes !== "string" ||
+          notes.length > 24_000
+        ) {
+          throw new Error(
+            "Enter a name of up to 80 characters and notes of up to 24,000 characters.",
+          );
+        }
+        const section = {
+          id: sections[index]?.id ?? randomUUID(),
+          source,
+          title: title.trim(),
+          notes,
+        };
+        if (index < 0) sections.push(section);
+        else sections[index] = section;
+      } else {
+        throw new Error("Choose a canvas detail to edit.");
+      }
+      const stageSettings = {
+        ...record.stageSettings,
+        [stage]: { ...record.stageSettings?.[stage], sections },
+      };
+      database.saveStageSettings(record.id, stageSettings);
+      return { ...record, stageSettings };
+    },
+  );
+
+  ipcMain.handle(
+    workflowChannels.saveMilestone,
+    (event, id: unknown, milestoneId: unknown, input: unknown) => {
+      trustedWindow(event);
+      const record = milestoneWorkflow(id);
+      const definition = readMilestoneInput(input);
+      const milestones = [...(record.milestones ?? [])];
+      const index = milestones.findIndex((milestone) => milestone.id === milestoneId);
+      if (milestoneId !== null && index === -1) throw new Error("This milestone no longer exists.");
+      const previous = milestones[index];
+      // Normalize older command records before comparing their execution settings.
+      const executionSettings = ({
+        title: _title,
+        description: _description,
+        ...settings
+      }: ReturnType<typeof readMilestoneInput>) => JSON.stringify(settings);
+      const sameExecution =
+        previous &&
+        executionSettings(readMilestoneInput(previous)) === executionSettings(definition);
+      const milestone: WorkflowMilestone = sameExecution
+        ? { ...previous, ...definition }
+        : { ...definition, id: previous?.id ?? randomUUID(), state: "ready" };
+      if (!sameExecution) {
+        checkMilestoneEdit(record, previous);
+        checkMilestoneEdit(record, milestone);
+      }
+      if (previous) milestones[index] = milestone;
+      else milestones.push(milestone);
+      getStore().saveMilestones(record.id, milestones);
+      return { ...record, milestones };
+    },
+  );
+
+  ipcMain.handle(workflowChannels.removeMilestone, (event, id: unknown, milestoneId: unknown) => {
+    trustedWindow(event);
+    const record = milestoneWorkflow(id);
+    const milestone = record.milestones?.find((entry) => entry.id === milestoneId);
+    if (!milestone) throw new Error("This milestone no longer exists.");
+    checkMilestoneEdit(record, milestone);
+    const milestones = record.milestones!.filter((entry) => entry.id !== milestoneId);
+    getStore().saveMilestones(record.id, milestones);
+    return { ...record, milestones };
+  });
+
+  async function executeMilestones(
+    record: WorkflowRecord,
+    queue: WorkflowMilestone[],
+    signal: AbortSignal,
+    explicitId?: string,
+  ) {
+    const database = getStore();
+    for (const milestone of queue) {
+      signal.throwIfAborted();
+      if (
+        milestone.action === "checkpoint" ||
+        (milestoneRequiresManualAction(milestone) && milestone.id !== explicitId)
+      ) {
+        return { milestone, paused: true };
+      }
+      const updateMilestone = (updated: WorkflowMilestone) => {
+        record.milestones = record.milestones?.map((entry) =>
+          entry.id === milestone.id ? updated : entry,
+        );
+        if (!shuttingDown && record.milestones)
+          database.saveMilestones(record.id, record.milestones);
+      };
+      const active = {
+        ...milestone,
+        state: "running" as const,
+        message: undefined,
+        output: undefined,
+      };
+      updateMilestone(active);
+      let result: Pick<WorkflowMilestone, "state" | "output" | "message">;
+      try {
+        const path = await workspaceDirectory(record.workspacePath);
+        if (path !== record.workspacePath) throw new Error("The workspace folder changed.");
+        signal.throwIfAborted();
+        result = await runWorkflowCommand(active, path, signal);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The command could not start.";
+        result = { state: signal.aborted ? "interrupted" : "failed", message };
+      }
+      updateMilestone({ ...active, ...result });
+      if (result.state !== "completed") return { milestone, paused: false };
+    }
+  }
+
+  function checkWorkspaceAvailable(record: WorkflowRecord) {
+    if ([...building.values()].some(({ path }) => path === record.workspacePath)) {
+      throw new Error("A task is already running in this workspace.");
+    }
+  }
+
+  function startMilestones(
+    record: WorkflowRecord,
+    queue: WorkflowMilestone[],
+    explicitId?: string,
+  ) {
+    const first = queue[0];
+    if (!first || (milestoneRequiresManualAction(first) && first.id !== explicitId)) return record;
+    checkWorkspaceAvailable(record);
+    const control = new AbortController();
+    building.set(record.id, { path: record.workspacePath, control });
+    void executeMilestones(record, queue, control.signal, explicitId)
+      .catch((error: unknown) => console.error("Executing milestones failed", error))
+      .finally(() => building.delete(record.id));
+    return record;
+  }
+
+  ipcMain.handle(workflowChannels.runMilestone, (event, id: unknown, milestoneId: unknown) => {
+    trustedWindow(event);
+    const record = milestoneWorkflow(id);
+    const next = nextManualMilestone(record);
+    if (!next && record.build?.state !== "completed") throw new Error("Complete Build first.");
+    if (!next || next.id !== milestoneId) {
+      throw new Error("Run or approve the next unfinished milestone in the flow.");
+    }
+    const hooks = pendingMilestones(record.milestones, "after-build");
+    checkWorkspaceAvailable(record);
+    if (next.action === "checkpoint") {
+      record.milestones = record.milestones?.map((milestone) =>
+        milestone.id === next.id
+          ? { ...milestone, state: "completed", message: undefined }
+          : milestone,
+      );
+      getStore().saveMilestones(record.id, record.milestones ?? []);
+      return next.timing === "after-build" ? startMilestones(record, hooks.slice(1)) : record;
+    }
+    return startMilestones(record, next.timing === "after-build" ? hooks : [next], next.id);
+  });
+
   function startBuildTask(
     record: WorkflowRecord,
     source: WorkItem,
@@ -618,9 +918,7 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     baselineFiles?: string[],
   ) {
     const { id, workspacePath } = record;
-    if ([...building.values()].some(({ path }) => path === workspacePath)) {
-      throw new Error("A task is already running in this workspace.");
-    }
+    checkWorkspaceAvailable(record);
     const database = getStore();
     const activeTask: WorkflowBuildTask = {
       ...task,
@@ -653,6 +951,17 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
       baselineFiles = undefined;
       control.signal.throwIfAborted();
       if (!shuttingDown) database.saveBuild(id, activeBuild);
+      const blocked = await executeMilestones(
+        record,
+        pendingMilestones(record.milestones, "before-build"),
+        control.signal,
+      );
+      if (blocked?.paused) return;
+      if (blocked)
+        throw new Error(
+          `Before Build hook failed: ${blocked.milestone.title}. Open it for details.`,
+        );
+      control.signal.throwIfAborted();
       const summary = await measureProviderCall(
         id,
         { phase: "Build", taskId: activeTask.id, attempt: activeTask.attempt },
@@ -675,13 +984,22 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
 
     void implement()
       .then(
-        ({ summary, git }) => {
-          if (!shuttingDown)
-            database.saveBuild(id, {
-              ...activeBuild,
-              state: "review",
-              tasks: replaceTask({ ...activeTask, state: "review", summary, git }),
-            });
+        (result) => {
+          if (shuttingDown) return;
+          database.saveBuild(
+            id,
+            result
+              ? {
+                  ...activeBuild,
+                  state: "review",
+                  tasks: replaceTask({ ...activeTask, state: "review", ...result }),
+                }
+              : {
+                  ...activeBuild,
+                  state: "ready",
+                  tasks: replaceTask({ ...task, git: activeTask.git }),
+                },
+          );
         },
         (error: unknown) => {
           if (!shuttingDown) {
@@ -724,6 +1042,11 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
       throw new Error("Approve the structured plan before starting Build.");
     }
     const tasks = build.tasks ?? createBuildTasks(plan.review);
+    const before = pendingMilestones(record.milestones, "before-build")[0];
+    if (before && milestoneRequiresManualAction(before)) {
+      const action = before.action === "checkpoint" ? "Approve" : "Run";
+      throw new Error(`${action} ${before.title} on the canvas before starting Build.`);
+    }
     const task = tasks.find((entry) => entry.state !== "approved");
     if (!task || task.state === "review") {
       throw new Error("Review the current task before continuing Build.");
@@ -820,7 +1143,10 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
       tasks,
     };
     database.saveBuild(record.id, completed);
-    return { ...record, build: completed };
+    return startMilestones(
+      { ...record, build: completed },
+      pendingMilestones(record.milestones, "after-build"),
+    );
   });
 
   ipcMain.handle(
@@ -1024,6 +1350,7 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
 
   app.once("will-quit", () => {
     shuttingDown = true;
+    quotaControl.abort();
     for (const [runId, started] of providerRuns) {
       store?.finishProviderRun(runId, "interrupted", Math.round(performance.now() - started));
     }

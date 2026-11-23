@@ -1,5 +1,6 @@
 import type { WorkBoard, WorkItem, WorkItemSummary, WorkSprint } from "./work-source";
 import type { KnowledgeApi, KnowledgeContext } from "./knowledge";
+import type { WorkflowSection, WorkflowSectionChange } from "./workflow-sections";
 
 export const workflowProviders = {
   codex: "Codex",
@@ -130,6 +131,65 @@ export type WorkflowBuild = { approvedAt: string; tasks?: WorkflowBuildTask[] } 
   | { state: "failed"; message: string; baselineFiles?: string[] }
 );
 
+export type MilestoneTiming = "before-build" | "after-build" | "follow-up";
+
+export interface WorkflowStageSettings {
+  title: string;
+  description: string;
+  expandDetails: "default" | "expanded" | "collapsed";
+}
+
+export type WorkflowStage = "idea" | "plan" | "build";
+
+export type MilestoneCommand = {
+  action?: "command";
+  executable: string;
+  args: string[];
+  timeoutMinutes?: number;
+  trigger?: "automatic" | "manual";
+};
+
+export type MilestoneInput = {
+  title: string;
+  timing: MilestoneTiming;
+  description?: string;
+} & (MilestoneCommand | { action: "checkpoint" });
+
+export type WorkflowMilestone = MilestoneInput & {
+  id: string;
+  state: "ready" | "running" | "completed" | "failed" | "interrupted";
+  output?: string;
+  message?: string;
+};
+
+export function milestoneRequiresManualAction(milestone: WorkflowMilestone) {
+  return milestone.action === "checkpoint" || milestone.trigger === "manual";
+}
+
+export function nextManualMilestone({
+  build,
+  milestones,
+}: Pick<WorkflowRecord, "build" | "milestones">): WorkflowMilestone | undefined {
+  if (!build) return;
+  if (build.state === "completed") {
+    return (
+      pendingMilestones(milestones, "after-build")[0] ??
+      pendingMilestones(milestones, "follow-up")[0]
+    );
+  }
+  const before = pendingMilestones(milestones, "before-build")[0];
+  if (before && milestoneRequiresManualAction(before)) return before;
+}
+
+export function pendingMilestones(
+  milestones: WorkflowMilestone[] | undefined,
+  timing: MilestoneTiming,
+): WorkflowMilestone[] {
+  return (milestones ?? []).filter(
+    (milestone) => milestone.timing === timing && milestone.state !== "completed",
+  );
+}
+
 export interface WorkflowRecord {
   id: string;
   request: string;
@@ -139,6 +199,10 @@ export interface WorkflowRecord {
   source?: WorkItem;
   plan?: WorkflowPlan;
   build?: WorkflowBuild;
+  milestones?: WorkflowMilestone[];
+  stageSettings?: Partial<
+    Record<WorkflowStage, Partial<WorkflowStageSettings> & { sections?: WorkflowSection[] }>
+  >;
   knowledge?: KnowledgeContext[];
 }
 
@@ -167,6 +231,27 @@ export interface ProviderRunMetric {
   startedAt: string;
   status: "running" | "completed" | "failed" | "interrupted";
   durationMs: number | null;
+  tokens?: ProviderTokenUsage;
+}
+
+export interface ProviderTokenUsage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
+  contextWindow?: number;
+}
+
+export interface ProviderQuotaWindow {
+  label: string;
+  usedPercent: number;
+  resetsAt: number | null;
+}
+
+export interface ProviderQuotaSnapshot {
+  checkedAt: number;
+  windows: ProviderQuotaWindow[];
 }
 
 export interface JiraResponse<T> {
@@ -181,6 +266,7 @@ export interface WorkflowApi {
   list(): Promise<WorkflowRecord[]>;
   removeWorkflow(id: string): Promise<void>;
   readTranscript(id: string, after: number): Promise<ProviderTranscriptPage>;
+  providerQuota(provider: WorkflowProvider): Promise<ProviderQuotaSnapshot>;
   exportTranscript(id: string): Promise<boolean>;
   restoreWorkspace(): Promise<string | null>;
   chooseWorkspace(): Promise<string | null>;
@@ -205,6 +291,23 @@ export interface WorkflowApi {
   startBuild(id: string, commitBaseline?: boolean): Promise<WorkflowRecord>;
   reviewBuildTask(id: string, input: BuildTaskReviewInput): Promise<WorkflowRecord>;
   readBuildCommitDiff(id: string, taskId: string, file: string): Promise<string>;
+  saveMilestone(
+    id: string,
+    milestoneId: string | null,
+    input: MilestoneInput,
+  ): Promise<WorkflowRecord>;
+  removeMilestone(id: string, milestoneId: string): Promise<WorkflowRecord>;
+  runMilestone(id: string, milestoneId: string): Promise<WorkflowRecord>;
+  saveStageSettings(
+    id: string,
+    stage: WorkflowStage,
+    settings: WorkflowStageSettings,
+  ): Promise<WorkflowRecord>;
+  editWorkflowSection(
+    id: string,
+    stage: WorkflowStage,
+    change: WorkflowSectionChange,
+  ): Promise<WorkflowRecord>;
   planningOptions(
     provider: WorkflowProvider,
     workspacePath: string,
@@ -216,6 +319,7 @@ export const workflowChannels = {
   list: "workflow:list",
   removeWorkflow: "workflow:remove",
   readTranscript: "workflow:read-transcript",
+  providerQuota: "workflow:provider-quota",
   exportTranscript: "workflow:export-transcript",
   restoreWorkspace: "workflow:restore-workspace",
   chooseWorkspace: "workflow:choose-workspace",
@@ -236,6 +340,11 @@ export const workflowChannels = {
   startBuild: "workflow:start-build",
   reviewBuildTask: "workflow:review-build-task",
   readBuildCommitDiff: "workflow:read-build-commit-diff",
+  saveMilestone: "workflow:save-milestone",
+  removeMilestone: "workflow:remove-milestone",
+  runMilestone: "workflow:run-milestone",
+  saveStageSettings: "workflow:save-stage-settings",
+  editWorkflowSection: "workflow:edit-section",
   planningOptions: "workflow:planning-options",
   listKnowledge: "knowledge:list",
   saveKnowledge: "knowledge:save",

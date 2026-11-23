@@ -6,7 +6,8 @@ import type {
   WorkflowBuildTask,
   WorkflowRecord,
 } from "@agent-desktop/shared";
-import { LayoutProvider, ToastProvider } from "@once-ui-system/core";
+import { onceUIStyle } from "@agent-desktop/ui/theme";
+import { LayoutProvider, ThemeProvider, ToastProvider } from "@once-ui-system/core";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./app";
@@ -37,6 +38,8 @@ function jiraResponse<T>(data: T, source: JiraResponse<T>["source"] = "jira"): J
 
 function fixtureApi(records: WorkflowRecord[] = []): WorkflowApi {
   return {
+    providerQuota: vi.fn().mockResolvedValue({ checkedAt: Date.now(), windows: [] }),
+    editWorkflowSection: vi.fn(),
     knowledge: {
       list: vi.fn().mockResolvedValue([]),
       save: vi.fn(),
@@ -64,6 +67,10 @@ function fixtureApi(records: WorkflowRecord[] = []): WorkflowApi {
       ...saved,
       build: { state: "ready", approvedAt: saved.createdAt },
     }),
+    saveMilestone: vi.fn(),
+    removeMilestone: vi.fn(),
+    runMilestone: vi.fn(),
+    saveStageSettings: vi.fn(),
     startBuild: vi.fn().mockResolvedValue({
       ...saved,
       build: { state: "completed", approvedAt: saved.createdAt, summary: "Implemented the tasks." },
@@ -84,6 +91,110 @@ function renderApp(api: WorkflowApi) {
     </LayoutProvider>,
   );
 }
+
+it("adds a follow-up milestone from the canvas and runs it from the inspector", async () => {
+  const record: WorkflowRecord = {
+    ...saved,
+    plan: { state: "ready", text: "Update the app." },
+    build: { state: "completed", approvedAt: saved.createdAt, summary: "All tasks approved." },
+  };
+  const command = {
+    title: "Testing",
+    timing: "follow-up",
+    executable: "pnpm",
+    args: ["test"],
+  } satisfies import("@agent-desktop/shared").MilestoneInput;
+  const milestone = { ...command, id: "testing", state: "ready" as const };
+  const api = fixtureApi([record]);
+  vi.mocked(api.saveMilestone).mockResolvedValue({ ...record, milestones: [milestone] });
+  vi.mocked(api.runMilestone).mockResolvedValue({
+    ...record,
+    milestones: [{ ...milestone, state: "completed", output: "All tests passed." }],
+  });
+  renderApp(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Add milestone" }));
+  const details = within(screen.getByRole("complementary", { name: "Workflow details" }));
+  fireEvent.change(details.getByLabelText("Name"), { target: { value: "Testing" } });
+  fireEvent.change(details.getByLabelText("Executable"), { target: { value: "pnpm" } });
+  fireEvent.change(details.getByLabelText("Arguments, one per line"), {
+    target: { value: "test" },
+  });
+  fireEvent.click(details.getByRole("button", { name: "Save milestone" }));
+  expect(api.saveMilestone).toHaveBeenCalledExactlyOnceWith(saved.id, null, {
+    ...command,
+    description: "",
+    action: "command",
+    timeoutMinutes: 10,
+    trigger: "manual",
+  });
+  expect(await screen.findByRole("button", { name: "Inspect milestone Testing" })).toBeTruthy();
+  fireEvent.click(details.getByRole("button", { name: "Run command" }));
+  expect(api.runMilestone).toHaveBeenCalledExactlyOnceWith(saved.id, milestone.id);
+  expect(await details.findByText("All tests passed.")).toBeTruthy();
+  expect(details.getByRole("status").textContent).toBe("Completed");
+});
+
+it("saves built-in canvas settings and converts a milestone to a checkpoint", async () => {
+  const command = {
+    id: "verification",
+    title: "Verification",
+    timing: "follow-up",
+    executable: "pnpm",
+    args: ["test"],
+    state: "ready",
+  } as const;
+  const record: WorkflowRecord = {
+    ...saved,
+    plan: { state: "ready", text: "Update the app." },
+    build: { state: "completed", approvedAt: saved.createdAt, summary: "All tasks approved." },
+    milestones: [{ ...command, args: [...command.args] }],
+  };
+  const settings = {
+    title: "Implementation",
+    description: "Implement approved tasks.",
+    expandDetails: "collapsed" as const,
+  };
+  const configured = { ...record, stageSettings: { build: settings } };
+  const checkpoint = {
+    id: command.id,
+    title: "Verification",
+    description: "Review the results.",
+    timing: "after-build",
+    action: "checkpoint",
+    state: "ready",
+  } as const;
+  const api = fixtureApi([record]);
+  vi.mocked(api.saveStageSettings).mockResolvedValue(configured);
+  vi.mocked(api.saveMilestone).mockResolvedValue({ ...configured, milestones: [checkpoint] });
+  renderApp(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Inspect Build" }));
+  const details = within(screen.getByRole("complementary", { name: "Workflow details" }));
+  fireEvent.click(details.getByRole("tab", { name: "Settings" }));
+  fireEvent.change(details.getByLabelText("Name"), { target: { value: settings.title } });
+  fireEvent.change(details.getByLabelText("Description"), {
+    target: { value: settings.description },
+  });
+  fireEvent.click(details.getByRole("radio", { name: "Collapsed" }));
+  fireEvent.click(details.getByRole("button", { name: "Save milestone" }));
+  expect(api.saveStageSettings).toHaveBeenCalledExactlyOnceWith(saved.id, "build", settings);
+  expect(await screen.findByRole("button", { name: "Inspect Implementation" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Inspect milestone Verification" }));
+  fireEvent.click(details.getByRole("tab", { name: "Settings" }));
+  fireEvent.click(details.getByRole("radio", { name: "Checkpoint" }));
+  fireEvent.click(details.getByRole("radio", { name: "After Build" }));
+  fireEvent.change(details.getByLabelText("Description"), {
+    target: { value: "Review the results." },
+  });
+  expect(details.queryByLabelText("Executable")).toBeNull();
+  fireEvent.click(details.getByRole("button", { name: "Save milestone" }));
+  expect(api.saveMilestone).toHaveBeenCalledExactlyOnceWith(saved.id, command.id, {
+    title: "Verification",
+    description: "Review the results.",
+    timing: "after-build",
+    action: "checkpoint",
+  });
+  expect(await details.findByRole("button", { name: "Approve checkpoint" })).toBeTruthy();
+});
 
 it("opens the selected committed file's diff in a separate dialog", async () => {
   const task: WorkflowBuildTask = {
@@ -159,35 +270,112 @@ it("shows new provider messages while planning and keeps export available", asyn
     attempt: message.attempt,
     startedAt: saved.createdAt,
   };
+  const prompt = "Show cleared payments in the settlement view.";
   vi.mocked(api.readTranscript)
     .mockResolvedValueOnce({
-      entries: [message],
+      entries: [
+        { ...message, sequence: 1, kind: "user", text: prompt },
+        { ...message, sequence: 2 },
+      ],
       hasMore: false,
       runs: [{ ...run, status: "running", durationMs: 900 }],
     })
     .mockResolvedValueOnce({
-      entries: [{ ...message, sequence: 2, text: "I found the payment view." }],
+      entries: [{ ...message, sequence: 3, kind: "result", text: "I found the payment view." }],
       hasMore: false,
-      runs: [{ ...run, status: "completed", durationMs: 1250 }],
+      runs: [
+        { ...run, status: "completed", durationMs: 1250, tokens: { input: 1234, output: 456 } },
+      ],
     });
   vi.mocked(api.exportTranscript).mockResolvedValue(false);
   renderApp(api);
   fireEvent.click(await screen.findByRole("button", { name: "Inspect Plan" }));
   const panel = within(screen.getByRole("complementary", { name: "Workflow details" }));
   expect(api.readTranscript).not.toHaveBeenCalled();
-  fireEvent.click(panel.getByRole("button", { name: "View live messages" }));
-  const feed = within(await panel.findByRole("region", { name: "Provider session messages" }));
+  fireEvent.click(panel.getByRole("tab", { name: "Activity" }));
+  const feed = within(await panel.findByRole("log", { name: "Provider session messages" }));
+  expect((await feed.findByText(prompt)).closest("[data-from]")?.getAttribute("data-from")).toBe(
+    "self",
+  );
+  expect(feed.getByText(message.text).closest("[data-from]")?.getAttribute("data-from")).toBe(
+    "other",
+  );
+  expect(feed.getByText("Workflow")).toBeTruthy();
+  expect(feed.getByText("Claude Code")).toBeTruthy();
+  expect(feed.getByText("Claude Code is working…")).toBeTruthy();
   const timing = within(panel.getByRole("region", { name: "Provider call durations" }));
   expect(timing.getByText("Running · 900 ms")).toBeTruthy();
   expect(feed.getByText(message.text)).toBeTruthy();
   expect(await feed.findByText("I found the payment view.", {}, { timeout: 2500 })).toBeTruthy();
+  expect(feed.getByText("Result")).toBeTruthy();
   expect(timing.getByText("Completed · 1.3 s")).toBeTruthy();
+  expect(timing.getByText("1,234 input tokens")).toBeTruthy();
+  expect(timing.getByText("456 output tokens")).toBeTruthy();
   expect(api.readTranscript).toHaveBeenNthCalledWith(1, saved.id, 0);
-  expect(api.readTranscript).toHaveBeenNthCalledWith(2, saved.id, 1);
+  expect(api.readTranscript).toHaveBeenNthCalledWith(2, saved.id, 2);
   fireEvent.click(panel.getByRole("button", { name: "Export provider transcript" }));
   expect(api.exportTranscript).toHaveBeenCalledExactlyOnceWith(saved.id);
-  fireEvent.click(panel.getByRole("button", { name: "Hide live messages" }));
-  expect(panel.queryByRole("region", { name: "Provider session messages" })).toBeNull();
+  fireEvent.click(panel.getByRole("tab", { name: "Overview" }));
+  expect(panel.queryByRole("log", { name: "Provider session messages" })).toBeNull();
+});
+
+it("shows the tightest provider quota in the workflow header and opens all windows", async () => {
+  const api = fixtureApi([saved]);
+  vi.mocked(api.providerQuota).mockResolvedValue({
+    checkedAt: Date.now(),
+    windows: [
+      { label: "5-hour", usedPercent: 25, resetsAt: null },
+      { label: "7-day", usedPercent: 86, resetsAt: Date.now() + 3_600_000 },
+    ],
+  });
+  renderApp(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Quota · 14% left" }));
+  const quota = within(await screen.findByRole("dialog", { name: "Claude Code quota" }));
+  expect(
+    quota.getByRole("progressbar", { name: "5-hour used" }).getAttribute("aria-valuenow"),
+  ).toBe("25");
+  expect(quota.getByText("75% left")).toBeTruthy();
+  expect(quota.getByText("14% left")).toBeTruthy();
+  expect(quota.getByText(/^Resets /)).toBeTruthy();
+});
+
+it("creates a canvas note and opens it for configuration", async () => {
+  const record: WorkflowRecord = { ...saved, plan: { state: "ready", text: "Review the scope." } };
+  const note = {
+    id: "note-1",
+    source: "note",
+    title: "Open questions",
+    notes: "Who owns rollout?",
+  };
+  const api = fixtureApi([record]);
+  vi.mocked(api.editWorkflowSection).mockResolvedValue({
+    ...record,
+    stageSettings: { plan: { sections: [note] } },
+  });
+  renderApp(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Inspect Plan" }));
+  expect(screen.getByRole("button", { name: "Collapse Plan" }).getAttribute("aria-expanded")).toBe(
+    "true",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Add detail" }));
+  const inspector = within(screen.getByRole("complementary", { name: "Workflow details" }));
+  fireEvent.change(inspector.getByRole("textbox", { name: "Name" }), {
+    target: { value: note.title },
+  });
+  fireEvent.change(inspector.getByRole("textbox", { name: "Notes" }), {
+    target: { value: note.notes },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Save detail" }));
+  expect(api.editWorkflowSection).toHaveBeenCalledExactlyOnceWith(record.id, "plan", {
+    action: "save",
+    id: null,
+    input: { source: note.source, title: note.title, notes: note.notes },
+  });
+  expect(await inspector.findByText(note.notes)).toBeTruthy();
+  expect(screen.getByRole("button", { name: note.title, pressed: true })).toBeTruthy();
+  fireEvent.click(inspector.getByRole("tab", { name: "Settings" }));
+  expect(inspector.getByRole("textbox", { name: "Name" })).toHaveProperty("value", note.title);
+  expect(inspector.getByRole("button", { name: "Remove detail" })).toBeTruthy();
 });
 
 it("opens the selected workflow workspace in Cursor", async () => {
@@ -844,7 +1032,9 @@ it("shows the selected Plan section when clicking the canvas and resets inspecto
   const inspector = screen.getByRole("complementary", { name: "Workflow details" });
   const panel = within(inspector);
   expect(panel.getByText("Full plan text.")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Expand Plan" }));
+  expect(screen.getByRole("button", { name: "Collapse Plan" }).getAttribute("aria-expanded")).toBe(
+    "true",
+  );
   inspector.scrollTop = 120;
   fireEvent.click(screen.getByRole("button", { name: "Scope" }));
   expect(panel.getByRole("heading", { name: "Scope" })).toBeTruthy();
@@ -930,6 +1120,60 @@ it("accepts a planning reply and keeps it available if sending fails", async () 
   fireEvent.click(send);
   await screen.findByText("Claude Code is preparing a plan.");
   expect(api.answerPlan).toHaveBeenLastCalledWith(saved.id, "Show open periods only.");
+});
+
+it("previews Once UI styles, restores them on reload, and resets to the app defaults", async () => {
+  const api = fixtureApi();
+  const root = document.documentElement;
+  const original = new Map(
+    root.getAttributeNames().map((name) => [name, root.getAttribute(name)!]),
+  );
+  const openAppearance = () => {
+    const view = render(
+      <ThemeProvider {...onceUIStyle} persistence="local">
+        <LayoutProvider>
+          <ToastProvider>
+            <App desktop={desktop} api={api} />
+          </ToastProvider>
+        </LayoutProvider>
+      </ThemeProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    return view;
+  };
+
+  try {
+    const first = openAppearance();
+    const brand = screen.getByRole("combobox", { name: "Brand" });
+    fireEvent.click(brand);
+    fireEvent.click(await screen.findByRole("option", { name: "Emerald" }));
+    expect(root.getAttribute("data-brand")).toBe("emerald");
+    expect(localStorage.getItem("data-brand")).toBe("emerald");
+    fireEvent.click(screen.getByRole("radio", { name: "Dark theme" }));
+    expect(root.getAttribute("data-theme")).toBe("dark");
+    const invert = screen.getByRole("button", { name: "Invert preview" });
+    fireEvent.click(invert);
+    expect(invert.getAttribute("aria-pressed")).toBe("true");
+    expect(root.getAttribute("data-theme")).toBe("dark");
+    first.unmount();
+
+    openAppearance();
+    expect(root.getAttribute("data-brand")).toBe("emerald");
+    await waitFor(() => expect(root.getAttribute("data-theme")).toBe("dark"));
+    fireEvent.click(screen.getByRole("button", { name: "Reset theme" }));
+    expect(root.getAttribute("data-brand")).toBe(onceUIStyle.brand);
+    expect(localStorage.getItem("data-brand")).toBe(onceUIStyle.brand);
+    expect(localStorage.getItem("data-theme")).toBeNull();
+  } finally {
+    cleanup();
+    for (const name of root.getAttributeNames()) {
+      if (!original.has(name)) root.removeAttribute(name);
+    }
+    for (const [name, value] of original) root.setAttribute(name, value);
+    for (const name of Object.keys(localStorage)) {
+      if (name.startsWith("data-")) localStorage.removeItem(name);
+    }
+  }
 });
 
 it("opens settings, saves the default provider, and verifies Jira access", async () => {

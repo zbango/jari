@@ -3,6 +3,8 @@ import type {
   PlanningOptions,
   PlanningSkill,
   ProviderTranscriptEntry,
+  ProviderTokenUsage,
+  ProviderQuotaWindow,
   WorkflowPlan,
 } from "@agent-desktop/shared";
 import { planReviewSchema, readPlanReview } from "./plan-review";
@@ -16,12 +18,16 @@ export interface PlanningRequest {
   transcript?: TranscriptWriter;
 }
 
-export type TranscriptWriter = (kind: ProviderTranscriptEntry["kind"], text: string) => void;
+export type TranscriptWriter = {
+  (kind: ProviderTranscriptEntry["kind"], text: string): void;
+  reportTokens?(usage: ProviderTokenUsage): void;
+};
 
 export type PlanningResult = Extract<WorkflowPlan, { state: "ready" | "needs-input" }>;
 
 export interface ProviderAdapter {
   planningOptions(cwd: string, signal: AbortSignal): Promise<PlanningOptions>;
+  quota(cwd: string, signal: AbortSignal): Promise<ProviderQuotaWindow[]>;
   plan(request: PlanningRequest): Promise<PlanningResult>;
   build(request: PlanningRequest): Promise<string>;
 }

@@ -13,6 +13,7 @@ const workflows: WorkflowApi = {
   list: () => ipcRenderer.invoke(workflowChannels.list),
   removeWorkflow: (id) => ipcRenderer.invoke(workflowChannels.removeWorkflow, id),
   readTranscript: (id, after) => ipcRenderer.invoke(workflowChannels.readTranscript, id, after),
+  providerQuota: (provider) => ipcRenderer.invoke(workflowChannels.providerQuota, provider),
   exportTranscript: (id) => ipcRenderer.invoke(workflowChannels.exportTranscript, id),
   restoreWorkspace: () => ipcRenderer.invoke(workflowChannels.restoreWorkspace),
   chooseWorkspace: () => ipcRenderer.invoke(workflowChannels.chooseWorkspace),
@@ -37,6 +38,16 @@ const workflows: WorkflowApi = {
   reviewBuildTask: (id, input) => ipcRenderer.invoke(workflowChannels.reviewBuildTask, id, input),
   readBuildCommitDiff: (id, taskId, file) =>
     ipcRenderer.invoke(workflowChannels.readBuildCommitDiff, id, taskId, file),
+  saveMilestone: (id, milestoneId, input) =>
+    ipcRenderer.invoke(workflowChannels.saveMilestone, id, milestoneId, input),
+  removeMilestone: (id, milestoneId) =>
+    ipcRenderer.invoke(workflowChannels.removeMilestone, id, milestoneId),
+  runMilestone: (id, milestoneId) =>
+    ipcRenderer.invoke(workflowChannels.runMilestone, id, milestoneId),
+  saveStageSettings: (id, stage, settings) =>
+    ipcRenderer.invoke(workflowChannels.saveStageSettings, id, stage, settings),
+  editWorkflowSection: (id, stage, change) =>
+    ipcRenderer.invoke(workflowChannels.editWorkflowSection, id, stage, change),
   create: (input) => ipcRenderer.invoke(workflowChannels.create, input),
 };
 

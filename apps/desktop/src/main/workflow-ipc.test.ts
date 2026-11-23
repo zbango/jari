@@ -7,7 +7,7 @@ import type { WorkflowRecord } from "@agent-desktop/shared";
 import { expect, it, vi } from "vitest";
 import { createAtlassianClient } from "./atlassian";
 import { openCursor } from "./cursor";
-import { generatePlanReview, runBuild, runPlanning } from "./planner";
+import { generatePlanReview, readProviderQuota, runBuild, runPlanning } from "./planner";
 import { registerWorkflowHandlers } from "./workflow-ipc";
 import { openWorkflowStore } from "./workflow-store";
 
@@ -37,6 +37,7 @@ vi.mock("./planner", () => ({
   getPlanningOptions: vi.fn(),
   generatePlanReview: vi.fn(),
   runBuild: vi.fn(),
+  readProviderQuota: vi.fn(),
 }));
 vi.mock("./cursor", () => ({ openCursor: vi.fn().mockResolvedValue(undefined) }));
 
@@ -75,8 +76,10 @@ it("runs and revises one approved Build task at a time", async () => {
           : task.attempt === 1
             ? "Implemented the task view."
             : "Added an accessible label.";
+      expect(readFileSync(join(workspace, "fixture.local"), "utf8")).toBe("prepared");
       transcript?.("user", JSON.stringify(tasks.map(({ id, state }) => ({ id, state }))));
       transcript?.("assistant", `  ${result}\n\n`);
+      transcript?.reportTokens?.({ input: 540, output: 80, cacheRead: 120 });
       mkdirSync(join(workspace, "src"), { recursive: true });
       writeFileSync(join(workspace, task.id === "1" ? "src/main.ts" : "src/storage.ts"), result);
       return result;
@@ -103,6 +106,48 @@ it("runs and revises one approved Build task at a time", async () => {
     })) as WorkflowRecord;
     expect(record.source).toMatchObject({ ...fixture, kind: "simulated", linkedIssues: [] });
     expect(record.source?.url).toBeUndefined();
+    vi.mocked(readProviderQuota).mockResolvedValue([
+      { label: "Codex · 5-hour", usedPercent: 25, resetsAt: null },
+    ]);
+    await expect(invoke(workflowChannels.providerQuota, "codex")).resolves.toMatchObject({
+      windows: [{ usedPercent: 25 }],
+    });
+    await invoke(workflowChannels.providerQuota, "codex");
+    expect(readProviderQuota).toHaveBeenCalledOnce();
+    await expect(invoke(workflowChannels.providerQuota, "bogus")).rejects.toThrow(
+      /supported provider/,
+    );
+    const edited = (await invoke(workflowChannels.editWorkflowSection, record.id, "plan", {
+      action: "save",
+      id: "context",
+      input: { source: "context", title: "Project background", notes: "Ask the project owner." },
+    })) as WorkflowRecord;
+    expect(edited.stageSettings?.plan?.sections?.[0]).toMatchObject({
+      id: "context",
+      title: "Project background",
+    });
+    await invoke(workflowChannels.editWorkflowSection, record.id, "plan", {
+      action: "remove",
+      id: "risks",
+    });
+    const added = (await invoke(workflowChannels.editWorkflowSection, record.id, "plan", {
+      action: "save",
+      id: null,
+      input: { source: "note", title: "Open questions", notes: "Who owns rollout?" },
+    })) as WorkflowRecord;
+    expect(added.stageSettings?.plan?.sections?.at(-1)).toMatchObject({
+      source: "note",
+      notes: "Who owns rollout?",
+    });
+    await invoke(workflowChannels.saveStageSettings, record.id, "plan", {
+      title: "Planning",
+      description: "Review the proposed plan.",
+      expandDetails: "expanded",
+    });
+    expect((await list())[0]?.stageSettings?.plan?.sections).toEqual(
+      added.stageSettings?.plan?.sections,
+    );
+    expect(added.stageSettings?.plan?.sections?.some(({ id }) => id === "risks")).toBe(false);
     await expect(
       invoke(workflowChannels.openWorkspaceInCursor, record.id),
     ).resolves.toBeUndefined();
@@ -133,6 +178,71 @@ it("runs and revises one approved Build task at a time", async () => {
     expect(generatePlanReview).toHaveBeenCalledOnce();
     await expect(invoke(workflowChannels.startBuild, record.id)).rejects.toThrow(/Approve/);
     expect(runBuild).not.toHaveBeenCalled();
+    const addCommand = async (title: string, timing: string, source: string) => {
+      const updated = (await invoke(workflowChannels.saveMilestone, record.id, null, {
+        title,
+        timing,
+        executable: process.execPath,
+        args: ["-e", source],
+      })) as WorkflowRecord;
+      return updated.milestones!.at(-1)!.id;
+    };
+    const before = await addCommand(
+      "Prepare workspace",
+      "before-build",
+      'require("node:fs").writeFileSync("fixture.local", "prepared"); console.log("prepared")',
+    );
+    const preflight = await addCommand("Review setup", "follow-up", 'console.log("unused")');
+    await expect(
+      invoke(workflowChannels.saveMilestone, record.id, preflight, {
+        title: "Review setup",
+        description: "Confirm the workspace is ready.",
+        timing: "before-build",
+        action: "checkpoint",
+      }),
+    ).resolves.toMatchObject({
+      milestones: expect.arrayContaining([
+        expect.objectContaining({ id: preflight, action: "checkpoint", timing: "before-build" }),
+      ]),
+    });
+    const manual = (await invoke(workflowChannels.saveMilestone, record.id, null, {
+      title: "Inspect setup",
+      timing: "before-build",
+      action: "command",
+      trigger: "manual",
+      executable: process.execPath,
+      args: ["-e", 'console.log("inspected")'],
+      timeoutMinutes: 2,
+    })) as WorkflowRecord;
+    const manualId = manual.milestones?.at(-1)?.id;
+    await invoke(workflowChannels.saveMilestone, record.id, null, {
+      title: "Review implementation",
+      timing: "after-build",
+      action: "checkpoint",
+    });
+    const afterReview = (await list())[0]?.milestones?.at(-1)?.id;
+    const after = await addCommand(
+      "Check output",
+      "after-build",
+      'if (require("node:fs").readFileSync("fixture.local", "utf8") !== "verify") process.exit(2); console.log("verified")',
+    );
+    const testing = await addCommand(
+      "Testing",
+      "follow-up",
+      'console.log("x".repeat(140_000)); console.log("tests passed")',
+    );
+    const milestone = async (id: string | undefined) =>
+      (await list())[0]?.milestones?.find((entry) => entry.id === id);
+    const stageSettings = {
+      title: "Implementation",
+      description: "Implement approved tasks.",
+      expandDetails: "collapsed",
+    };
+    await invoke(workflowChannels.saveStageSettings, record.id, "build", stageSettings);
+    expect((await list())[0]?.stageSettings?.build).toEqual(stageSettings);
+    await expect(invoke(workflowChannels.runMilestone, record.id, testing)).rejects.toThrow(
+      /Complete Build/,
+    );
     await expect(invoke(workflowChannels.approvePlan, record.id)).resolves.toMatchObject({
       build: {
         state: "ready",
@@ -162,11 +272,33 @@ it("runs and revises one approved Build task at a time", async () => {
     git("config", "user.name", "Jari Test");
     git("config", "commit.gpgsign", "false");
     await invoke(workflowChannels.startBuild, record.id, true);
+    await vi.waitFor(async () => {
+      expect(await milestone(before)).toMatchObject({ state: "completed", output: "prepared\n" });
+      expect((await list())[0]?.build?.state).toBe("ready");
+    });
+    expect(runBuild).not.toHaveBeenCalled();
+    await expect(invoke(workflowChannels.startBuild, record.id)).rejects.toThrow(
+      /Approve Review setup/,
+    );
+    await invoke(workflowChannels.runMilestone, record.id, preflight);
+    await expect(invoke(workflowChannels.startBuild, record.id)).rejects.toThrow(
+      /Run Inspect setup/,
+    );
+    await invoke(workflowChannels.runMilestone, record.id, manualId);
+    await vi.waitFor(async () =>
+      expect(await milestone(manualId)).toMatchObject({
+        state: "completed",
+        output: "inspected\n",
+      }),
+    );
+    await invoke(workflowChannels.startBuild, record.id);
     const waitForReview = (tasks: object[]) =>
       vi.waitFor(async () =>
         expect((await list())[0]?.build).toMatchObject({ state: "review", tasks }),
       );
     await waitForReview([{ state: "review", attempt: 1 }, { state: "queued" }]);
+    expect(await milestone(preflight)).toMatchObject({ state: "completed" });
+    expect(await milestone(after)).toMatchObject({ state: "ready" });
     expect(git("log", "--format=%s")).toBe("chore: record existing workspace");
     expect(git("ls-tree", "-r", "--name-only", "HEAD")).toBe(".gitignore\nREADME.md\nnotes.txt");
     expect(git("diff", "--cached", "--name-only")).toBe("");
@@ -253,6 +385,36 @@ it("runs and revises one approved Build task at a time", async () => {
       expect.objectContaining({ id: "2", state: "running" }),
     ]);
     await invoke(workflowChannels.reviewBuildTask, record.id, { taskId: "2", attempt: 1 });
+    expect(await milestone(after)).toMatchObject({ state: "ready" });
+    await expect(invoke(workflowChannels.runMilestone, record.id, after)).rejects.toThrow(
+      /next unfinished milestone/,
+    );
+    await invoke(workflowChannels.runMilestone, record.id, afterReview);
+    await vi.waitFor(async () =>
+      expect(await milestone(after)).toMatchObject({
+        state: "failed",
+        message: "Command failed (2).",
+      }),
+    );
+    await expect(invoke(workflowChannels.runMilestone, record.id, testing)).rejects.toThrow(
+      /next unfinished milestone/,
+    );
+    writeFileSync(join(workspace, "fixture.local"), "verify");
+    await invoke(workflowChannels.runMilestone, record.id, after);
+    await vi.waitFor(async () =>
+      expect(await milestone(after)).toMatchObject({
+        state: "completed",
+        output: "verified\n",
+      }),
+    );
+    await invoke(workflowChannels.runMilestone, record.id, testing);
+    await vi.waitFor(async () =>
+      expect(await milestone(testing)).toMatchObject({
+        state: "completed",
+        output: expect.stringMatching(/tests passed\n$/),
+      }),
+    );
+    expect((await milestone(testing))?.output).toHaveLength(32_000);
     expect(git("log", "--format=%s")).toBe(
       "feat: Persist tasks\nfix: add an accessible task label\nchore: record existing workspace",
     );
@@ -298,6 +460,7 @@ it("runs and revises one approved Build task at a time", async () => {
     expect(exported).toContain("Build · Task 1 · Attempt 1");
     expect(exported).toContain("Build · Task 1 · Attempt 2");
     expect(exported).toContain("Build · Task 2 · Attempt 1");
+    expect(exported).toContain("540 input tokens · 80 output tokens");
     expect(exported).toContain('\n[{"id":"1","state":"approved"},{"id":"2","state":"running"}]');
     expect(exported).toContain("\n  Added an accessible label.\n\n");
 

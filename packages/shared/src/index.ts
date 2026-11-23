@@ -4,9 +4,18 @@ export interface DesktopInfo {
 }
 
 export { releaseVersionFromTag } from "./release-version";
+export { workflowSectionSources, workflowSections } from "./workflow-sections";
+export type {
+  WorkflowSection,
+  WorkflowSectionChange,
+  WorkflowSectionInput,
+} from "./workflow-sections";
 export {
   isWorkflowProvider,
   maxPlanAnswerLength,
+  pendingMilestones,
+  nextManualMilestone,
+  milestoneRequiresManualAction,
   simulatedIssueLimits,
   workflowChannels,
   workflowProviders,
@@ -17,18 +26,27 @@ export type {
   CreateWorkflowInput,
   CustomPlanOptions,
   JiraResponse,
+  MilestoneInput,
+  MilestoneCommand,
+  MilestoneTiming,
   PlanClarification,
   PlanReview,
   PlanRevision,
   PlanningOptions,
   PlanningSkill,
   ProviderRunMetric,
+  ProviderQuotaSnapshot,
+  ProviderQuotaWindow,
+  ProviderTokenUsage,
   ProviderTranscriptEntry,
   ReplayPlanInput,
   SimulatedIssueInput,
   WorkflowApi,
   WorkflowBuild,
   WorkflowBuildTask,
+  WorkflowMilestone,
+  WorkflowStage,
+  WorkflowStageSettings,
   WorkflowPlan,
   WorkflowProvider,
   WorkflowRecord,

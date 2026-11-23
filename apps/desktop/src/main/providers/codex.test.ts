@@ -17,7 +17,7 @@ vi.mock("./process", () => ({
 }));
 
 it("starts Build in default mode with a workspace-write sandbox and approvals off", async () => {
-  const transcript = vi.fn();
+  const transcript = Object.assign(vi.fn(), { reportTokens: vi.fn() });
   listServers.mockResolvedValue({ stdout: "[]" });
   const child = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(),
@@ -59,6 +59,17 @@ it("starts Build in default mode with a workspace-write sandbox and approvals of
         },
       });
       send({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "build-thread",
+          tokenUsage: {
+            modelContextWindow: 200_000,
+            total: { inputTokens: 4096, outputTokens: 230, cachedInputTokens: 1024 },
+            last: { inputTokens: 128, outputTokens: 30 },
+          },
+        },
+      });
+      send({
         method: "turn/completed",
         params: { threadId: "build-thread", turn: { status: "completed" } },
       });
@@ -73,6 +84,9 @@ it("starts Build in default mode with a workspace-write sandbox and approvals of
       transcript,
     }),
   ).resolves.toBe("Added the task tracker.");
+  expect(transcript.reportTokens).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ input: 4096, output: 230, cacheRead: 1024, contextWindow: 200_000 }),
+  );
   expect(transcript.mock.calls).toEqual([
     ["session", "build-thread"],
     ["user", "Implement the approved plan.\n\nApproved plan: build the tracker."],

@@ -2,10 +2,11 @@ import { lstat, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import type { PlanningOptions } from "@agent-desktop/shared";
+import type { PlanningOptions, ProviderQuotaWindow } from "@agent-desktop/shared";
 import { providerOptions, spawnProvider } from "./process";
 import { planningOutputSchema, readPlanningResult, selectPlanningSkills } from "./types";
 import type { PlanningRequest, ProviderAdapter } from "./types";
+import { claudeQuota, claudeTokens } from "./usage";
 
 const effortLevels = ["low", "medium", "high", "xhigh", "max"];
 
@@ -123,6 +124,7 @@ async function runClaude(
     is_error?: boolean;
     structured_output?: unknown;
     result?: string;
+    modelUsage?: unknown;
   };
   const lines = createInterface({ input: child.stdout });
   let result: ClaudeEvent | undefined;
@@ -147,6 +149,8 @@ async function runClaude(
         }
         if (event.type === "result") {
           result = event;
+          const usage = claudeTokens(event.modelUsage);
+          if (usage) transcript?.reportTokens?.(usage);
           if (typeof event.result === "string") transcript?.("result", event.result);
           if (event.structured_output !== undefined) {
             transcript?.("result", JSON.stringify(event.structured_output, null, 2));
@@ -178,7 +182,52 @@ async function runClaude(
   });
 }
 
+function readClaudeQuota(cwd: string, signal: AbortSignal): Promise<ProviderQuotaWindow[]> {
+  const child = spawnProvider(
+    "claude",
+    [
+      "--print",
+      "--safe-mode",
+      "--restricted",
+      "--strict-mcp-config",
+      "--tools",
+      "",
+      "--permission-mode",
+      "dontAsk",
+      "--permission-prompts",
+      "none",
+      "--no-session-persistence",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "/usage",
+    ],
+    cwd,
+    signal,
+  );
+  const lines = createInterface({ input: child.stdout });
+  return new Promise((resolve, reject) => {
+    let windows: ProviderQuotaWindow[] = [];
+    lines.on("line", (line) => {
+      try {
+        const event = JSON.parse(line) as { type?: string; usage_report?: unknown };
+        if (event.type === "assistant" && event.usage_report)
+          windows = claudeQuota(event.usage_report);
+      } catch {
+        // Only structured usage reports are read from CLI output.
+      }
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      lines.close();
+      resolve(code === 0 ? windows : []);
+    });
+    child.stdin.end();
+  });
+}
+
 export const claude: ProviderAdapter = {
+  quota: readClaudeQuota,
   planningOptions: claudeOptions,
   async plan(request) {
     return readPlanningResult((await runClaude(request, false)).structured_output);

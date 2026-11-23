@@ -1,4 +1,4 @@
-import { isWorkflowProvider, workflowProviders } from "@agent-desktop/shared";
+import { isWorkflowProvider, workflowProviders, workflowSections } from "@agent-desktop/shared";
 import type {
   DesktopInfo,
   KnowledgeNote,
@@ -27,11 +27,13 @@ import {
   mascotStorageKey,
 } from "./workflow/provider-activity";
 import { ProviderMessages } from "./workflow/provider-messages";
+import { ProviderQuota } from "./workflow/provider-quota";
 import type { Selection } from "./workflow/stages";
 import { WorkflowDetails } from "./workflow/workflow-details";
 import { workflowError } from "./workflow/workflow-error";
 import { WorkflowForm } from "./workflow/workflow-form";
 import { WorkflowGraph } from "./workflow/workflow-graph";
+import { WorkflowMilestoneDetails } from "./workflow/workflow-milestones";
 import { WorkflowOnboarding } from "./workflow/workflow-onboarding";
 import { WorkflowPlanContent } from "./workflow/workflow-plan-content";
 
@@ -55,11 +57,12 @@ function readMascotDesign() {
   }
 }
 
-function isWorkflowRunning({ plan, build }: WorkflowRecord) {
+function isWorkflowRunning({ plan, build, milestones }: WorkflowRecord) {
   return (
     plan?.state === "running" ||
     (plan?.state === "ready" && plan.reviewAttempt?.state === "running") ||
-    build?.state === "running"
+    build?.state === "running" ||
+    (milestones?.some(({ state }) => state === "running") ?? false)
   );
 }
 
@@ -90,6 +93,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [selection, setSelection] = useState<Selection>({ stage: "idea" });
+  const selectedMilestone = current?.milestones?.find(({ id }) => id === selection.milestoneId);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [canvasSession, setCanvasSession] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -99,7 +103,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   useLayoutEffect(() => {
     inspectedWorkflow.current = currentId;
     if (inspector.current) inspector.current.scrollTop = 0;
-  }, [currentId, selection.stage, selection.section, selection.taskId]);
+  }, [currentId, selection.stage, selection.section, selection.taskId, selection.milestoneId]);
 
   useEffect(() => {
     let active = true;
@@ -368,6 +372,12 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                   </div>
                   <Row gap="8" vertical="center" horizontal="end" wrap>
                     <span className="draft-label">Saved locally</span>
+                    <ProviderQuota
+                      key={current.provider}
+                      provider={current.provider}
+                      readQuota={api.providerQuota}
+                      providerRunning={isWorkflowRunning(current)}
+                    />
                     <Button
                       type="button"
                       size="s"
@@ -394,8 +404,17 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                   hasWorkflow
                   plan={current.plan}
                   build={current.build}
+                  milestones={current.milestones}
+                  stageSettings={current.stageSettings}
                   selection={selection}
-                  onSelect={setSelection}
+                  onSelect={(next) => {
+                    setSelection(next);
+                    if (next.milestoneId || next.section === "new") setInspectorOpen(true);
+                  }}
+                  onAddMilestone={() => {
+                    setSelection({ stage: "build", milestoneId: "new" });
+                    setInspectorOpen(true);
+                  }}
                 />
               </div>
               <aside
@@ -405,34 +424,95 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                 aria-label="Workflow details"
                 hidden={!inspectorOpen}
               >
-                <WorkflowDetails
-                  key={current.id}
-                  workflow={current}
-                  selection={selection}
-                  openJiraLink={api.openJiraLink}
-                  loadIssue={api.linkedIssue}
-                  openPlanReview={() => openPlanReview(current.id)}
-                  exportTranscript={exportTranscript}
-                  readTranscript={api.readTranscript}
-                  readCommitDiff={api.readBuildCommitDiff}
-                  retryPlan={() => retryPlan(current.id)}
-                  answerPlan={(answer) => answerPlan(current.id, answer)}
-                  startBuild={async (commitBaseline) => {
-                    updateWorkflow(
-                      await (commitBaseline
-                        ? api.startBuild(current.id, true)
-                        : api.startBuild(current.id)),
-                    );
-                  }}
-                  reviewBuildTask={async (input) => {
-                    updateWorkflow(await api.reviewBuildTask(current.id, input));
-                    if (!input.feedback && inspectedWorkflow.current === current.id) {
-                      setSelection((selected) =>
-                        selected.taskId === input.taskId ? { stage: "build" } : selected,
+                {selection.milestoneId === "new" || selectedMilestone ? (
+                  <WorkflowMilestoneDetails
+                    key={`${current.id}/${selection.milestoneId}`}
+                    milestone={selectedMilestone}
+                    workflow={current}
+                    onSave={async (input) => {
+                      const updated = await api.saveMilestone(
+                        current.id,
+                        selectedMilestone?.id ?? null,
+                        input,
                       );
-                    }
-                  }}
-                />
+                      updateWorkflow(updated);
+                      if (!selectedMilestone && inspectedWorkflow.current === current.id) {
+                        const added = updated.milestones?.at(-1);
+                        setSelection((selected) =>
+                          selected.milestoneId === "new" && added
+                            ? { stage: "build", milestoneId: added.id }
+                            : selected,
+                        );
+                      }
+                    }}
+                    onRun={async () => {
+                      if (selectedMilestone)
+                        updateWorkflow(await api.runMilestone(current.id, selectedMilestone.id));
+                    }}
+                    onRemove={async () => {
+                      if (!selectedMilestone) return;
+                      updateWorkflow(await api.removeMilestone(current.id, selectedMilestone.id));
+                      if (inspectedWorkflow.current === current.id) {
+                        setSelection((selected) =>
+                          selected.milestoneId === selectedMilestone.id
+                            ? { stage: "build" }
+                            : selected,
+                        );
+                      }
+                    }}
+                    onCancel={() => setSelection({ stage: "build" })}
+                  />
+                ) : (
+                  <WorkflowDetails
+                    key={`${current.id}/${selection.stage}/${selection.section ?? ""}/${selection.taskId ?? ""}`}
+                    workflow={current}
+                    selection={selection}
+                    saveStageSettings={async (settings) => {
+                      updateWorkflow(
+                        await api.saveStageSettings(current.id, selection.stage, settings),
+                      );
+                    }}
+                    openMilestone={(id) => setSelection({ stage: "build", milestoneId: id })}
+                    closeSection={() => setSelection({ stage: selection.stage })}
+                    editSection={async (change) => {
+                      const stage = selection.stage;
+                      const updated = await api.editWorkflowSection(current.id, stage, change);
+                      updateWorkflow(updated);
+                      if (inspectedWorkflow.current !== current.id) return;
+                      setSelection((selected) => {
+                        if (selected.stage !== stage || selected.section !== selection.section)
+                          return selected;
+                        if (change.action === "remove") return { stage };
+                        if (change.id !== null) return selected;
+                        const section = workflowSections(stage, updated.stageSettings).at(-1);
+                        return section ? { stage, section: section.id } : { stage };
+                      });
+                    }}
+                    openJiraLink={api.openJiraLink}
+                    loadIssue={api.linkedIssue}
+                    openPlanReview={() => openPlanReview(current.id)}
+                    exportTranscript={exportTranscript}
+                    readTranscript={api.readTranscript}
+                    readCommitDiff={api.readBuildCommitDiff}
+                    retryPlan={() => retryPlan(current.id)}
+                    answerPlan={(answer) => answerPlan(current.id, answer)}
+                    startBuild={async (commitBaseline) => {
+                      updateWorkflow(
+                        await (commitBaseline
+                          ? api.startBuild(current.id, true)
+                          : api.startBuild(current.id)),
+                      );
+                    }}
+                    reviewBuildTask={async (input) => {
+                      updateWorkflow(await api.reviewBuildTask(current.id, input));
+                      if (!input.feedback && inspectedWorkflow.current === current.id) {
+                        setSelection((selected) =>
+                          selected.taskId === input.taskId ? { stage: "build" } : selected,
+                        );
+                      }
+                    }}
+                  />
+                )}
               </aside>
             </>
           ) : loading || loadError ? (

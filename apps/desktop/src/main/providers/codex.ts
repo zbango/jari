@@ -6,6 +6,7 @@ import { planReviewSchema, readNativePlan } from "./plan-review";
 import { providerOptions, spawnProvider } from "./process";
 import { planningOutputSchema, readPlanningResult, selectPlanningSkills } from "./types";
 import type { ProviderAdapter, TranscriptWriter } from "./types";
+import { codexQuota, codexTokens } from "./usage";
 
 const planningFeatureFlags = ["--disable", "hooks", "--disable", "plugins", "--disable", "apps"];
 
@@ -18,6 +19,7 @@ type CodexMessage = {
     threadId?: string;
     item?: { type: string; text?: string };
     turn?: { status: string };
+    tokenUsage?: unknown;
   };
 };
 
@@ -227,6 +229,10 @@ async function codexTurn(
   const result = new Promise<{ plan: string; reply: string }>((resolve, reject) => {
     onNotification((message) => {
       if (message.params?.threadId !== threadId) return;
+      if (message.method === "thread/tokenUsage/updated") {
+        const usage = codexTokens(message.params.tokenUsage);
+        if (usage) transcript?.reportTokens?.(usage);
+      }
       const item = message.params.item;
       if (message.method === "item/completed" && typeof item?.text === "string") {
         try {
@@ -257,6 +263,12 @@ async function codexTurn(
 }
 
 export const codex: ProviderAdapter = {
+  quota(cwd, signal) {
+    return withCodexServer(cwd, signal, async ({ request, setPhase }) => {
+      setPhase("account quota");
+      return codexQuota(await request("account/rateLimits/read", {}));
+    });
+  },
   planningOptions(cwd, signal) {
     return withCodexServer(cwd, signal, async ({ request, setPhase }) => {
       setPhase("model and skill discovery");

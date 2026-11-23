@@ -7,40 +7,21 @@ export const stages = {
     title: "Idea",
     icon: "lightbulb",
     description: "Inspect the work item and workspace.",
-    sections: { request: "Request", workspace: "Workspace", context: "Context sources" },
   },
   plan: {
     title: "Plan",
     icon: "layers",
     description: "Review scope, tasks, and decisions.",
-    sections: {
-      context: "Context",
-      scope: "Scope",
-      tasks: "Tasks",
-      roles: "Provider settings",
-      permissions: "Permissions",
-      risks: "Risks and assumptions",
-      approval: "Plan approval",
-    },
   },
   build: {
     title: "Build",
     icon: "code",
     description: "Inspect implementation and changes.",
-    sections: {
-      worktree: "Worktree",
-      tasks: "Implementation tasks",
-      files: "File changes",
-      tools: "Provider settings",
-      activity: "Provider messages",
-      approvals: "Execution approvals",
-      summary: "Implementation summary",
-    },
   },
 } as const;
 
 export type Stage = keyof typeof stages;
-export type Selection = { stage: Stage; section?: string; taskId?: string };
+export type Selection = { stage: Stage; section?: string; taskId?: string; milestoneId?: string };
 export type WorkflowStatusKind = "waiting" | "running" | "review" | "saved" | "failed" | "blocked";
 type WorkflowStatus = {
   label: string;

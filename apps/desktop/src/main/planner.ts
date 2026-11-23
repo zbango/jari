@@ -15,6 +15,10 @@ import type { ProviderAdapter, TranscriptWriter } from "./providers/types";
 
 const providers: Record<WorkflowProvider, ProviderAdapter> = { claude, codex };
 
+export function readProviderQuota(provider: WorkflowProvider, cwd: string, signal: AbortSignal) {
+  return providers[provider].quota(cwd, signal);
+}
+
 export function getPlanningOptions(provider: WorkflowProvider, cwd: string, signal: AbortSignal) {
   return providers[provider].planningOptions(cwd, signal);
 }
