@@ -1,6 +1,7 @@
 import { workflowProviders } from "@agent-desktop/shared";
 import type { DesktopInfo, WorkflowApi, WorkflowProvider } from "@agent-desktop/shared";
 import { useLayout, useToast } from "@once-ui-system/core";
+import type { MascotDesign } from "@once-ui-system/core";
 import { Button } from "@once-ui-system/core/components/Button";
 import { Column } from "@once-ui-system/core/components/Column";
 import { Feedback } from "@once-ui-system/core/components/Feedback";
@@ -13,8 +14,10 @@ import { Setting } from "@once-ui-system/core/components/Setting";
 import { Tab, TabList, TabPanel, Tabs } from "@once-ui-system/core/components/Tabs";
 import { Text } from "@once-ui-system/core/components/Text";
 import { ThemeSwitcher } from "@once-ui-system/core/components/ThemeSwitcher";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import icon from "../../../resources/icon.png?url";
+import { MascotSettings } from "./mascot-settings";
+import { MascotDesignContext } from "./workflow/provider-activity";
 import { workflowError } from "./workflow/workflow-error";
 
 type JiraCheck = { state: "checking" | "success" } | { state: "error"; message: string };
@@ -29,18 +32,21 @@ export function SettingsPage({
   checkJira,
   defaultProvider,
   onProviderChange,
+  onMascotChange,
   onBack,
 }: {
   desktop: DesktopInfo;
   checkJira: WorkflowApi["assignedSprintIssues"];
   defaultProvider: WorkflowProvider;
   onProviderChange(provider: WorkflowProvider): void;
+  onMascotChange(design: MascotDesign): void;
   onBack(): void;
 }) {
   const [jira, setJira] = useState<JiraCheck>();
   const firstTab = useRef<HTMLElement>(null);
   const { maxWidth } = useLayout();
   const { addToast } = useToast();
+  const mascotDesign = useContext(MascotDesignContext);
 
   useEffect(() => {
     firstTab.current?.focus();
@@ -115,6 +121,9 @@ export function SettingsPage({
               <Tab ref={firstTab} value="appearance" prefixIcon="light" tone="brand">
                 Appearance
               </Tab>
+              <Tab value="mascot" tone="brand">
+                Mascot
+              </Tab>
               <Tab value="workflows" prefixIcon="grid" tone="brand">
                 Workflows
               </Tab>
@@ -140,6 +149,10 @@ export function SettingsPage({
               >
                 <ThemeSwitcher aria-label="Theme" semantics="radio" />
               </Setting>
+            </TabPanel>
+
+            <TabPanel value="mascot" background="surface" border radius="l" padding="24">
+              <MascotSettings design={mascotDesign} onChange={onMascotChange} />
             </TabPanel>
 
             <TabPanel

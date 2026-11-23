@@ -10,6 +10,7 @@ import {
 } from "@agent-desktop/shared";
 import type {
   CustomPlanOptions,
+  ProviderRunMetric,
   WorkItem,
   WorkflowBuild,
   WorkflowBuildTask,
@@ -25,8 +26,15 @@ import { createJiraCache, jiraReply } from "./jira-cache";
 import { readKnowledgeNote, readKnowledgeNoteIds } from "./knowledge";
 import { generatePlanReview, getPlanningOptions, runBuild, runPlanning } from "./planner";
 import type { TranscriptWriter } from "./providers/types";
-import { captureTaskChanges, commitTaskChanges, prepareTaskGit } from "./workflow-git";
+import {
+  captureTaskChanges,
+  commitTaskChanges,
+  prepareTaskGit,
+  readCommitFileDiff,
+  WorkspaceBaselineRequired,
+} from "./workflow-git";
 import { openWorkflowStore } from "./workflow-store";
+import type { ProviderRunScope } from "./workflow-store";
 
 async function workspaceDirectory(path: string): Promise<string> {
   if (isAbsolute(path)) {
@@ -132,6 +140,7 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
   const inspectedIssues = new WeakMap<WebContents, Map<string, WorkItem>>();
   const running = new Map<string, AbortController>();
   const building = new Map<string, { path: string; control: AbortController }>();
+  const providerRuns = new Map<string, number>();
   let shuttingDown = false;
   let store: ReturnType<typeof openWorkflowStore> | undefined;
   const readJira = createJiraCache(getStore);
@@ -151,10 +160,40 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     return store;
   }
 
-  function duringSession(writer: TranscriptWriter): TranscriptWriter {
-    return (kind, text) => {
-      if (!shuttingDown) writer(kind, text);
-    };
+  async function measureProviderCall<T>(
+    id: string,
+    scope: ProviderRunScope,
+    call: (write: TranscriptWriter) => Promise<T>,
+    failed?: (result: T) => boolean,
+  ): Promise<T> {
+    const database = getStore();
+    const { runId, write } = database.startProviderRun(id, scope);
+    const started = performance.now();
+    providerRuns.set(runId, started);
+    let status: "completed" | "failed" = "failed";
+    try {
+      const result = await call((kind, text) => {
+        if (!shuttingDown) write(kind, text);
+      });
+      if (!failed?.(result)) status = "completed";
+      return result;
+    } finally {
+      const durationMs = Math.round(performance.now() - started);
+      providerRuns.delete(runId);
+      if (!shuttingDown) database.finishProviderRun(runId, status, durationMs);
+    }
+  }
+
+  function providerMetrics(id: string): ProviderRunMetric[] {
+    return getStore()
+      .providerRuns(id)
+      .map((run) => {
+        if (run.status !== "running") return run;
+        const started = providerRuns.get(run.runId);
+        return started === undefined
+          ? { ...run, status: "interrupted" }
+          : { ...run, durationMs: Math.round(performance.now() - started) };
+      });
   }
 
   function trustedWindow(event: IpcMainInvokeEvent): BrowserWindow {
@@ -269,7 +308,11 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     }
     const pageSize = 50;
     const entries = getStore().transcript(id, after, pageSize + 1);
-    return { entries: entries.slice(0, pageSize), hasMore: entries.length > pageSize };
+    return {
+      entries: entries.slice(0, pageSize),
+      hasMore: entries.length > pageSize,
+      runs: providerMetrics(id),
+    };
   });
 
   ipcMain.handle(workflowChannels.exportTranscript, async (event, id: unknown) => {
@@ -277,8 +320,8 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     const database = getStore();
     const record = database.list().find((workflow) => workflow.id === id);
     if (!record) throw new Error("Select a saved workflow.");
-    if (!database.transcript(record.id, 0, 1).length) {
-      throw new Error("This workflow has no recorded provider messages yet.");
+    if (!database.transcript(record.id, 0, 1).length && !providerMetrics(record.id).length) {
+      throw new Error("This workflow has no recorded provider calls yet.");
     }
     const { canceled, filePath } = await dialog.showSaveDialog(window, {
       title: "Export provider transcript",
@@ -288,14 +331,20 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     if (canceled || !filePath) return false;
     trustedWindow(event);
     const entries = database.transcript(record.id);
-    if (!entries.length) throw new Error("This workflow no longer has a provider transcript.");
+    const runs = providerMetrics(record.id);
+    if (!entries.length && !runs.length)
+      throw new Error("This workflow no longer has a provider transcript.");
     const messages = entries.map(({ createdAt, phase, taskId, attempt, runId, kind, text }) => {
       const scope = taskId === null ? phase : `${phase} · Task ${taskId} · Attempt ${attempt}`;
       return `[${createdAt}] ${scope} · ${runId} · ${kind}\n${text}`;
     });
+    const timing = runs.map(({ startedAt, phase, taskId, attempt, runId, status, durationMs }) => {
+      const scope = taskId === null ? phase : `${phase} · Task ${taskId} · Attempt ${attempt}`;
+      return `[${startedAt}] ${scope} · ${runId} · ${status} · ${durationMs === null ? "Duration unavailable" : `${durationMs} ms`}`;
+    });
     await writeFile(
       filePath,
-      `Workflow ${record.id} · ${record.provider}\n\n${messages.join("\n\n")}\n`,
+      `Workflow ${record.id} · ${record.provider}\n\n${timing.length ? `Provider call durations\n${timing.join("\n")}\n\n` : ""}${messages.join("\n\n")}\n`,
       {
         encoding: "utf8",
         mode: 0o600,
@@ -448,18 +497,23 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
   function startPlan(record: WorkflowRecord, source: WorkItem): void {
     const control = new AbortController();
     const { clarifications, custom, revision } = record.plan ?? {};
-    const transcript = getStore().transcriptWriter(record.id, { phase: "Plan" });
     running.set(record.id, control);
-    void runPlanning(
-      record.provider,
-      source,
-      record.workspacePath,
-      control.signal,
-      record.knowledge,
-      clarifications,
-      custom,
-      duringSession(transcript),
-      revision,
+    void measureProviderCall(
+      record.id,
+      { phase: "Plan" },
+      (write) =>
+        runPlanning(
+          record.provider,
+          source,
+          record.workspacePath,
+          control.signal,
+          record.knowledge,
+          clarifications,
+          custom,
+          write,
+          revision,
+        ),
+      (result) => result.state === "failed",
     )
       .then(async (result) => {
         if (shuttingDown) return;
@@ -490,13 +544,8 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
   ) {
     let updated: WorkflowPlan;
     try {
-      const review = await generatePlanReview(
-        record.provider,
-        source,
-        record.workspacePath,
-        plan,
-        signal,
-        duringSession(getStore().transcriptWriter(record.id, { phase: "Plan review" })),
+      const review = await measureProviderCall(record.id, { phase: "Plan review" }, (write) =>
+        generatePlanReview(record.provider, source, record.workspacePath, plan, signal, write),
       );
       updated = { ...plan, review, reviewAttempt: undefined };
     } catch (error) {
@@ -566,6 +615,7 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     build: WorkflowBuild,
     tasks: WorkflowBuildTask[],
     task: WorkflowBuildTask,
+    baselineFiles?: string[],
   ) {
     const { id, workspacePath } = record;
     if ([...building.values()].some(({ path }) => path === workspacePath)) {
@@ -599,24 +649,24 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
       control.signal.throwIfAborted();
       const verified = await verifyPlanningSource(source);
       control.signal.throwIfAborted();
-      activeTask.git = await prepareTaskGit(path, activeTask.git);
+      activeTask.git = await prepareTaskGit(path, activeTask.git, baselineFiles);
+      baselineFiles = undefined;
       control.signal.throwIfAborted();
       if (!shuttingDown) database.saveBuild(id, activeBuild);
-      const summary = await runBuild(
-        record.provider,
-        verified,
-        path,
-        plan,
-        activeTask,
-        activeTasks,
-        control.signal,
-        duringSession(
-          database.transcriptWriter(id, {
-            phase: "Build",
-            taskId: activeTask.id,
-            attempt: activeTask.attempt,
-          }),
-        ),
+      const summary = await measureProviderCall(
+        id,
+        { phase: "Build", taskId: activeTask.id, attempt: activeTask.attempt },
+        (write) =>
+          runBuild(
+            record.provider,
+            verified,
+            path,
+            plan,
+            activeTask,
+            activeTasks,
+            control.signal,
+            write,
+          ),
       );
       control.signal.throwIfAborted();
       const git = await captureTaskChanges(path, activeTask.git, task.title);
@@ -636,11 +686,18 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
         (error: unknown) => {
           if (!shuttingDown) {
             const message = error instanceof Error ? error.message : "The build task failed.";
+            const files = error instanceof WorkspaceBaselineRequired ? error.files : baselineFiles;
             database.saveBuild(id, {
               ...activeBuild,
               state: "failed",
               message,
-              tasks: replaceTask({ ...activeTask, state: "failed", message }),
+              ...(files?.length ? { baselineFiles: files } : {}),
+              tasks: replaceTask({
+                ...activeTask,
+                attempt: activeTask.git ? activeTask.attempt : task.attempt,
+                state: "failed",
+                message,
+              }),
             });
           }
         },
@@ -650,7 +707,7 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     return { ...record, build: activeBuild };
   }
 
-  ipcMain.handle(workflowChannels.startBuild, (event, id: unknown) => {
+  ipcMain.handle(workflowChannels.startBuild, (event, id: unknown, commitBaseline: unknown) => {
     trustedWindow(event);
     const record = getStore()
       .list()
@@ -671,7 +728,19 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     if (!task || task.state === "review") {
       throw new Error("Review the current task before continuing Build.");
     }
-    return startBuildTask(record, record.source, plan, build, tasks, task);
+    const baselineFiles = build.state === "failed" ? build.baselineFiles : undefined;
+    if (commitBaseline === true && !baselineFiles?.length) {
+      throw new Error("Review the initial Git commit before continuing.");
+    }
+    return startBuildTask(
+      record,
+      record.source,
+      plan,
+      build,
+      tasks,
+      task,
+      commitBaseline === true ? baselineFiles : undefined,
+    );
   });
 
   ipcMain.handle(workflowChannels.reviewBuildTask, async (event, id: unknown, input: unknown) => {
@@ -753,6 +822,29 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
     database.saveBuild(record.id, completed);
     return { ...record, build: completed };
   });
+
+  ipcMain.handle(
+    workflowChannels.readBuildCommitDiff,
+    async (event, id: unknown, taskId: unknown, file: unknown) => {
+      trustedWindow(event);
+      const record = getStore()
+        .list()
+        .find((workflow) => workflow.id === id);
+      const task = record?.build?.tasks?.find((entry) => entry.id === taskId);
+      if (
+        !record ||
+        !task?.git?.commit ||
+        typeof file !== "string" ||
+        !task.git.review?.files.includes(file)
+      ) {
+        throw new Error("Select a file from this task's approved commit.");
+      }
+      const path = await workspaceDirectory(record.workspacePath);
+      trustedWindow(event);
+      if (path !== record.workspacePath) throw new Error("The saved workspace folder changed.");
+      return readCommitFileDiff(path, task.git.commit.hash, file);
+    },
+  );
 
   ipcMain.handle(workflowChannels.create, async (event, input: unknown) => {
     trustedWindow(event);
@@ -932,6 +1024,9 @@ export function registerWorkflowHandlers(getWindow: () => BrowserWindow | null):
 
   app.once("will-quit", () => {
     shuttingDown = true;
+    for (const [runId, started] of providerRuns) {
+      store?.finishProviderRun(runId, "interrupted", Math.round(performance.now() - started));
+    }
     for (const control of running.values()) control.abort();
     for (const { control } of building.values()) control.abort();
     store?.close();

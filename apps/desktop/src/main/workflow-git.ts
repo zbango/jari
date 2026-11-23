@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { access, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -74,15 +74,30 @@ async function requireIdleRepository(path: string) {
   }
 }
 
-export async function prepareTaskGit(path: string, previous?: TaskGit): Promise<TaskGit> {
+export class WorkspaceBaselineRequired extends Error {
+  constructor(
+    readonly files: string[],
+    changed = false,
+  ) {
+    super(
+      changed
+        ? "The workspace file list changed. Review it before creating the initial commit."
+        : "Review the existing files and create an initial Git commit before starting Build.",
+    );
+  }
+}
+
+export async function prepareTaskGit(
+  path: string,
+  previous?: TaskGit,
+  baselineFiles?: string[],
+): Promise<TaskGit> {
   let root: string;
   try {
     root = (await git(path, ["rev-parse", "--show-toplevel"])).trimEnd();
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes("not a git repository")) throw error;
-    if (previous || (await readdir(path)).length) {
-      throw new Error("Choose the root of a Git repository or an empty workspace.");
-    }
+    if (previous) throw new Error("The Git repository for this task is unavailable.");
     await git(path, ["init"]);
     root = path;
   }
@@ -95,10 +110,31 @@ export async function prepareTaskGit(path: string, previous?: TaskGit): Promise<
     }
     return previous;
   }
-  if (await git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+  const dirty = await git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (!dirty) return current;
+  if (current.base || (await git(path, ["diff", "--cached", "--name-only", "-z"]))) {
     throw new Error("Commit or stash existing workspace changes before starting this Build task.");
   }
-  return current;
+  const files = (await git(path, ["ls-files", "--others", "--exclude-standard", "-z"]))
+    .split("\0")
+    .filter(Boolean)
+    .map((file) => file.replace(/\/$/, ""));
+  if (!baselineFiles) throw new WorkspaceBaselineRequired(files);
+  const expected = JSON.stringify([...baselineFiles].sort());
+  if (JSON.stringify([...files].sort()) !== expected) {
+    throw new WorkspaceBaselineRequired(files, true);
+  }
+  const changes = await snapshot(path, null);
+  if (JSON.stringify([...changes.files].sort()) !== expected) {
+    throw new WorkspaceBaselineRequired(changes.files, true);
+  }
+  const baseline = await commitTaskChanges(
+    path,
+    { ...current, review: { ...changes, subject: "chore: record existing workspace" } },
+    "workspace-baseline",
+    undefined,
+  );
+  return { branch: current.branch, base: baseline.commit?.hash ?? null };
 }
 
 async function snapshot(path: string, base: string | null) {
@@ -143,6 +179,31 @@ export async function captureTaskChanges(
   await prepareTaskGit(path, taskGit);
   const changes = await snapshot(path, taskGit.base);
   return { ...taskGit, review: { ...changes, subject: defaultSubject(title, changes.files) } };
+}
+
+export async function readCommitFileDiff(
+  path: string,
+  commit: string,
+  file: string,
+): Promise<string> {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit)) {
+    throw new Error("This task has an invalid Git commit ID.");
+  }
+  return git(path, [
+    "--literal-pathspecs",
+    "show",
+    "--format=",
+    "--patch",
+    "--root",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--ignore-submodules=none",
+    commit,
+    "--",
+    file,
+  ]);
 }
 
 export async function commitTaskChanges(

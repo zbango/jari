@@ -62,7 +62,27 @@ Verification
 
 Keep this follow-up focused on reading and updating an existing task. Use the starter app's local storage.`,
 };
-type SimulationScenario = "scaffold" | "edit-task";
+const deleteTaskIssue = {
+  title: "Delete an existing task in Pocket Tasks",
+  description: `Continue from the existing Pocket Tasks app after completing the edit task scenario. Reuse the existing stable task IDs and localStorage persistence.
+
+Acceptance criteria
+- Add a keyboard-accessible Delete action to each task. Confirm which task will be deleted before removing it.
+- On confirmation, remove only the selected task by ID and persist the updated list. Preserve the remaining tasks' titles, completion states, and order.
+- Cancel or Escape closes confirmation without deleting anything. If the task is already gone, leave the rest of the list unchanged and show a helpful message.
+- Show the existing empty state after deleting the last task. Keep add, edit, and completion working.
+
+Verification
+- Create two tasks with the same title. Cancel deletion once, then confirm deletion for one and verify that the other survives a reload with its completion state intact.
+- Delete the last task and verify the empty state persists after reload.
+- Run the existing project checks and production build.`,
+};
+const simulationScenarios = [
+  { id: "scaffold", label: "Scaffold Pocket Tasks", issue: sampleIssue },
+  { id: "edit-task", label: "Edit an existing task", issue: editTaskIssue },
+  { id: "delete-task", label: "Delete an existing task", issue: deleteTaskIssue },
+] as const;
+type SimulationScenario = (typeof simulationScenarios)[number]["id"];
 type IssueSource = "assigned" | "board" | "simulation";
 
 function useWorkflowQuery<T>(
@@ -502,14 +522,12 @@ export function WorkflowForm({
                 label="Scenario"
                 value={scenario}
                 disabled={pending !== null}
-                options={[
-                  { value: "scaffold", label: "Scaffold Pocket Tasks" },
-                  { value: "edit-task", label: "Edit an existing task" },
-                ]}
+                options={simulationScenarios.map(({ id, label }) => ({ value: id, label }))}
                 onValueChange={(value) => {
-                  if (value === "scaffold" || value === "edit-task") {
-                    setScenario(value);
-                    setSimulatedIssue(value === "scaffold" ? sampleIssue : editTaskIssue);
+                  const selected = simulationScenarios.find(({ id }) => id === value);
+                  if (selected) {
+                    setScenario(selected.id);
+                    setSimulatedIssue(selected.issue);
                   }
                 }}
               />

@@ -1,4 +1,6 @@
 import type { BuildTaskState, WorkflowBuild, WorkflowPlan } from "@agent-desktop/shared";
+import type { Icon } from "@once-ui-system/core/components/Icon";
+import type { ComponentProps } from "react";
 
 export const stages = {
   idea: {
@@ -15,7 +17,7 @@ export const stages = {
       context: "Context",
       scope: "Scope",
       tasks: "Tasks",
-      roles: "Roles",
+      roles: "Provider settings",
       permissions: "Permissions",
       risks: "Risks and assumptions",
       approval: "Plan approval",
@@ -29,8 +31,8 @@ export const stages = {
       worktree: "Worktree",
       tasks: "Implementation tasks",
       files: "File changes",
-      tools: "Tool activity",
-      activity: "Agent activity",
+      tools: "Provider settings",
+      activity: "Provider messages",
       approvals: "Execution approvals",
       summary: "Implementation summary",
     },
@@ -39,23 +41,29 @@ export const stages = {
 
 export type Stage = keyof typeof stages;
 export type Selection = { stage: Stage; section?: string; taskId?: string };
+export type WorkflowStatusKind = "waiting" | "running" | "review" | "saved" | "failed" | "blocked";
+type WorkflowStatus = {
+  label: string;
+  kind: WorkflowStatusKind;
+  icon: ComponentProps<typeof Icon>["name"];
+};
 export const stageOrder: Stage[] = ["idea", "plan", "build"];
 
 export const buildTaskStatus = {
   queued: { label: "Queued", kind: "waiting", icon: "time" },
   running: { label: "Building", kind: "running", icon: "time" },
-  review: { label: "Needs review", kind: "waiting", icon: "message" },
+  review: { label: "Needs review", kind: "review", icon: "message" },
   approved: { label: "Approved", kind: "saved", icon: "checkCircle" },
-  failed: { label: "Failed", kind: "blocked", icon: "warning" },
+  failed: { label: "Failed", kind: "failed", icon: "warning" },
   interrupted: { label: "Interrupted", kind: "blocked", icon: "pause" },
-} as const satisfies Record<BuildTaskState, { label: string; kind: string; icon: string }>;
+} as const satisfies Record<BuildTaskState, WorkflowStatus>;
 
 export function stageStatus(
   stage: Stage,
   hasWorkflow: boolean,
   plan?: WorkflowPlan,
   build?: WorkflowBuild,
-) {
+): WorkflowStatus {
   switch (stage) {
     case "idea":
       return hasWorkflow
@@ -66,17 +74,19 @@ export function stageStatus(
         case "running":
           return { label: "Planning", kind: "running", icon: "time" as const };
         case "ready":
-          return plan.reviewAttempt?.state === "running"
-            ? { label: "Preparing review", kind: "running", icon: "time" as const }
-            : {
-                label: build ? "Approved" : "Draft ready",
-                kind: "saved",
-                icon: "checkCircle" as const,
-              };
+          if (plan.reviewAttempt?.state === "running") {
+            return { label: "Preparing review", kind: "running", icon: "time" as const };
+          }
+          if (plan.reviewAttempt?.state === "failed") {
+            return { label: "Review failed", kind: "failed", icon: "warning" as const };
+          }
+          return build
+            ? { label: "Approved", kind: "saved", icon: "checkCircle" as const }
+            : { label: "Draft ready", kind: "review", icon: "document" as const };
         case "needs-input":
-          return { label: "Needs input", kind: "waiting", icon: "message" as const };
+          return { label: "Needs input", kind: "review", icon: "message" as const };
         case "failed":
-          return { label: "Planning failed", kind: "blocked", icon: "warning" as const };
+          return { label: "Planning failed", kind: "failed", icon: "warning" as const };
         case "interrupted":
           return { label: "Interrupted", kind: "blocked", icon: "pause" as const };
         default:
@@ -93,7 +103,7 @@ export function stageStatus(
         case "completed":
           return { label: "Completed", kind: "saved", icon: "checkCircle" as const };
         case "failed":
-          return { label: "Build failed", kind: "blocked", icon: "warning" as const };
+          return { label: "Build failed", kind: "failed", icon: "warning" as const };
         case "interrupted":
           return { label: "Interrupted", kind: "blocked", icon: "pause" as const };
         default:

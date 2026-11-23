@@ -127,7 +127,7 @@ export interface BuildTaskReviewInput {
 export type WorkflowBuild = { approvedAt: string; tasks?: WorkflowBuildTask[] } & (
   | { state: "ready" | "running" | "review" | "interrupted" }
   | { state: "completed"; summary: string }
-  | { state: "failed"; message: string }
+  | { state: "failed"; message: string; baselineFiles?: string[] }
 );
 
 export interface WorkflowRecord {
@@ -156,6 +156,17 @@ export interface ProviderTranscriptEntry {
 export interface ProviderTranscriptPage {
   entries: ProviderTranscriptEntry[];
   hasMore: boolean;
+  runs: ProviderRunMetric[];
+}
+
+export interface ProviderRunMetric {
+  runId: string;
+  phase: ProviderTranscriptEntry["phase"];
+  taskId: string | null;
+  attempt: number | null;
+  startedAt: string;
+  status: "running" | "completed" | "failed" | "interrupted";
+  durationMs: number | null;
 }
 
 export interface JiraResponse<T> {
@@ -191,8 +202,9 @@ export interface WorkflowApi {
   answerPlan(id: string, answer: string): Promise<WorkflowRecord>;
   generatePlanReview(id: string): Promise<WorkflowRecord>;
   approvePlan(id: string): Promise<WorkflowRecord>;
-  startBuild(id: string): Promise<WorkflowRecord>;
+  startBuild(id: string, commitBaseline?: boolean): Promise<WorkflowRecord>;
   reviewBuildTask(id: string, input: BuildTaskReviewInput): Promise<WorkflowRecord>;
+  readBuildCommitDiff(id: string, taskId: string, file: string): Promise<string>;
   planningOptions(
     provider: WorkflowProvider,
     workspacePath: string,
@@ -223,6 +235,7 @@ export const workflowChannels = {
   approvePlan: "workflow:approve-plan",
   startBuild: "workflow:start-build",
   reviewBuildTask: "workflow:review-build-task",
+  readBuildCommitDiff: "workflow:read-build-commit-diff",
   planningOptions: "workflow:planning-options",
   listKnowledge: "knowledge:list",
   saveKnowledge: "knowledge:save",

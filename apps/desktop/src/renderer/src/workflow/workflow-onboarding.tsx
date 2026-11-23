@@ -6,7 +6,12 @@ import { Heading } from "@once-ui-system/core/components/Heading";
 import { Icon } from "@once-ui-system/core/components/Icon";
 import { Row } from "@once-ui-system/core/components/Row";
 import { Text } from "@once-ui-system/core/components/Text";
+import { MatrixFx } from "@once-ui-system/fx";
 import type { Ref } from "react";
+
+// MatrixFx resolves color tokens when the canvas starts, before the theme may be ready.
+const matrixColors = ["#7a63eb"];
+const matrixRipple = { type: "ripple", duration: 4000, intensity: 15, repeat: true } as const;
 
 const stages = [
   {
@@ -19,13 +24,13 @@ const stages = [
     title: "Review the plan",
     icon: "layers",
     description:
-      "Attach Company Knowledge, answer provider questions, and review the steps, proposed diffs, and verification checks.",
+      "Attach Company Knowledge and review the proposed tasks, code changes, and verification steps.",
   },
   {
-    title: "Build after approval",
+    title: "Build and review",
     icon: "code",
     description:
-      "Approve the plan, then start Build to let the selected provider implement it in your workspace.",
+      "Start Build after approving the plan. Review each task’s changes before the provider moves on.",
   },
 ] as const;
 
@@ -42,55 +47,90 @@ export function WorkflowOnboarding({
       aria-label="Workflow onboarding"
       data-workflow-onboarding
       className="workflow-empty"
-      horizontal="center"
-      padding="l"
-      overflowY="auto"
+      position="relative"
+      overflow="hidden"
     >
-      <Column maxWidth="62rem" fillWidth gap="24" marginY="auto">
-        <Column gap="12" maxWidth="34rem">
-          <Heading as="h2" textVariant="display-strong-xs">
-            From work item to implementation
-          </Heading>
-          <Text as="p" textVariant="body-default-m" onBackground="neutral-weak">
-            Use Codex or Claude Code to plan and build in a local workspace. Your workflows are
-            saved here so you can return to them later.
-          </Text>
-          <Row paddingTop="4">
-            <Button
-              ref={newWorkflowButton}
-              type="button"
-              prefixIcon="plus"
-              aria-haspopup="dialog"
-              data-new-workflow
-              onClick={onNewWorkflow}
-            >
-              New workflow
-            </Button>
-          </Row>
+      <MatrixFx
+        aria-hidden="true"
+        position="absolute"
+        top="0"
+        left="0"
+        fill
+        pointerEvents="none"
+        opacity={60}
+        colors={matrixColors}
+        size={3}
+        spacing={11}
+        bulge={matrixRipple}
+        fps={24}
+      />
+      <Column
+        position="absolute"
+        top="0"
+        left="0"
+        fill
+        horizontal="center"
+        padding="l"
+        overflowY="auto"
+      >
+        <Column maxWidth="62rem" fillWidth gap="24" marginY="auto">
+          <Column
+            position="relative"
+            overflow="hidden"
+            background="neutral-alpha-weak"
+            border
+            radius="xl"
+            padding="48"
+            s={{ padding: "24" }}
+          >
+            <Column gap="16" maxWidth="32rem">
+              <Heading as="h2" textVariant="display-strong-s" wrap="balance">
+                From work item to implementation
+              </Heading>
+              <Text as="p" textVariant="body-default-m" onBackground="neutral-medium">
+                Plan and build with Codex or Claude Code in a local workspace. Pick up saved
+                workflows from the sidebar.
+              </Text>
+              <Row paddingTop="8">
+                <Button
+                  ref={newWorkflowButton}
+                  type="button"
+                  prefixIcon="plus"
+                  aria-haspopup="dialog"
+                  data-new-workflow
+                  onClick={onNewWorkflow}
+                >
+                  New workflow
+                </Button>
+              </Row>
+            </Column>
+          </Column>
+          <Grid minColumnWidth={204} gap="12">
+            {stages.map(({ title, icon, description }) => (
+              <Card
+                key={title}
+                fillWidth
+                fillHeight
+                padding="20"
+                background="surface"
+                border
+                radius="l"
+              >
+                <Column gap="12">
+                  <Row fitWidth padding="8" background="brand-alpha-weak" radius="m">
+                    <Icon name={icon} size="m" onBackground="brand-medium" decorative />
+                  </Row>
+                  <Heading as="h3" textVariant="heading-strong-s">
+                    {title}
+                  </Heading>
+                  <Text as="p" textVariant="body-default-s" onBackground="neutral-weak">
+                    {description}
+                  </Text>
+                </Column>
+              </Card>
+            ))}
+          </Grid>
         </Column>
-        <Grid columns={3} m={{ columns: 2 }} s={{ columns: 1 }} gap="12">
-          {stages.map(({ title, icon, description }) => (
-            <Card
-              key={title}
-              fillWidth
-              fillHeight
-              padding="16"
-              background="surface"
-              border
-              radius="l"
-            >
-              <Column gap="8">
-                <Icon name={icon} size="m" onBackground="brand-medium" decorative />
-                <Heading as="h3" textVariant="heading-strong-s">
-                  {title}
-                </Heading>
-                <Text as="p" textVariant="body-default-s" onBackground="neutral-weak">
-                  {description}
-                </Text>
-              </Column>
-            </Card>
-          ))}
-        </Grid>
       </Column>
     </Column>
   );

@@ -9,9 +9,9 @@ import { Row } from "@once-ui-system/core/components/Row";
 import { Tag } from "@once-ui-system/core/components/Tag";
 import { Text } from "@once-ui-system/core/components/Text";
 import { Timeline } from "@once-ui-system/core/components/Timeline";
-import { ProposedDiff } from "./proposed-diff";
+import { CodeDiff } from "./code-diff";
 
-function ReviewList({
+export function ReviewList({
   title,
   items,
   ordered = false,
@@ -38,6 +38,63 @@ function ReviewList({
 const fileLabels = { create: "Create", update: "Update", delete: "Delete" } as const;
 const fileTones = { create: "success", update: "info", delete: "danger" } as const;
 
+export function PlanSteps({ steps }: { steps: PlanReview["steps"] }) {
+  return (
+    <Column gap="8">
+      <Heading as="h3" textVariant="heading-strong-m">
+        Implementation steps
+      </Heading>
+      <Timeline
+        size="s"
+        items={steps.map(({ title, detail, files }, index) => ({
+          marker: index + 1,
+          label: title,
+          description: detail,
+          children: files.length > 0 && (
+            <Row gap="4" wrap>
+              {files.map((path, fileIndex) => (
+                <InlineCode key={fileIndex}>{path}</InlineCode>
+              ))}
+            </Row>
+          ),
+        }))}
+      />
+    </Column>
+  );
+}
+
+export function PlannedFileChanges({ files }: { files: PlanReview["files"] }) {
+  return (
+    <Column gap="8">
+      <Heading as="h3" textVariant="heading-strong-m">
+        Proposed file changes
+      </Heading>
+      {files.map(({ path, action, summary, diff }, index) => (
+        <Accordion
+          key={index}
+          defaultOpen
+          title={
+            <Row gap="8" wrap vertical="center">
+              <Tag tone={fileTones[action]} size="s" label={fileLabels[action]} />
+              <InlineCode>{path}</InlineCode>
+            </Row>
+          }
+          contentProps={{ gap: "12" }}
+        >
+          <Text as="p">{summary}</Text>
+          {diff.trim() ? (
+            <CodeDiff diff={diff} path={path} />
+          ) : (
+            <Text onBackground="neutral-weak" textVariant="body-default-s">
+              Exact code changes are still to be determined.
+            </Text>
+          )}
+        </Accordion>
+      ))}
+    </Column>
+  );
+}
+
 export function PlanReviewSections({ review, text }: { review: PlanReview; text: string }) {
   return (
     <Column gap="20">
@@ -53,56 +110,8 @@ export function PlanReviewSections({ review, text }: { review: PlanReview; text:
           <ReviewList title="Considerations and trade-offs" items={review.considerations} />
         </Accordion>
       )}
-      {review.steps.length > 0 && (
-        <Column gap="8">
-          <Heading as="h3" textVariant="heading-strong-m">
-            Implementation steps
-          </Heading>
-          <Timeline
-            size="s"
-            items={review.steps.map(({ title, detail, files }, index) => ({
-              marker: index + 1,
-              label: title,
-              description: detail,
-              children: files.length > 0 && (
-                <Row gap="4" wrap>
-                  {files.map((path, fileIndex) => (
-                    <InlineCode key={fileIndex}>{path}</InlineCode>
-                  ))}
-                </Row>
-              ),
-            }))}
-          />
-        </Column>
-      )}
-      {review.files.length > 0 && (
-        <Column gap="8">
-          <Heading as="h3" textVariant="heading-strong-m">
-            Proposed file changes
-          </Heading>
-          {review.files.map(({ path, action, summary, diff }, index) => (
-            <Accordion
-              key={index}
-              title={
-                <Row gap="8" wrap vertical="center">
-                  <Tag tone={fileTones[action]} size="s" label={fileLabels[action]} />
-                  <InlineCode>{path}</InlineCode>
-                </Row>
-              }
-              contentProps={{ gap: "12" }}
-            >
-              <Text as="p">{summary}</Text>
-              {diff.trim() ? (
-                <ProposedDiff diff={diff} path={path} />
-              ) : (
-                <Text onBackground="neutral-weak" textVariant="body-default-s">
-                  Exact code changes are still to be determined.
-                </Text>
-              )}
-            </Accordion>
-          ))}
-        </Column>
-      )}
+      {review.steps.length > 0 && <PlanSteps steps={review.steps} />}
+      {review.files.length > 0 && <PlannedFileChanges files={review.files} />}
       {(review.reproduction.length > 0 || review.verification.length > 0) && (
         <Accordion title="Reproduction and verification" defaultOpen contentProps={{ gap: "12" }}>
           <ReviewList title="Reproduce the current behavior" items={review.reproduction} ordered />

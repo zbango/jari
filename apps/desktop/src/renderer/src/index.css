@@ -4,8 +4,8 @@
 @import "@fontsource-variable/geist-mono";
 @source ".";
 
-/* Once UI portals its dropdowns to the document below the sheet's stacking level. */
-body:has(.workflow-intake-sheet) > * .dropdown-portal {
+/* Once UI portals dropdowns below the workflow dialogs' stacking level. */
+body:has(.workflow-intake-sheet, [data-workflow-plan-review]) > * .dropdown-portal {
   z-index: 11;
 }
 
@@ -20,11 +20,14 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
   --accent: var(--brand-on-background-medium);
   --graph-dot: var(--neutral-alpha-medium);
   --graph-link: var(--brand-on-background-weak);
+  --graph-active: var(--brand-on-background-strong);
+  --graph-review: var(--warning-on-background-medium);
+  --graph-error: var(--danger-solid-medium);
   --saved: var(--success-on-background-medium);
   --blocked: var(--warning-on-background-medium);
   --error: var(--danger-on-background-medium);
   display: grid;
-  grid-template: auto minmax(0, 1fr) / 214px minmax(0, 1fr) 310px;
+  grid-template: auto minmax(0, 1fr) / 214px minmax(0, 1fr);
   height: 100dvh;
   background: var(--workspace-bg);
   color: var(--text);
@@ -219,22 +222,24 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
 }
 
 .workflow-node {
+  position: relative;
   display: flex;
   height: 100%;
   flex-direction: column;
-  border: 1px solid var(--line);
+  border: 1px solid var(--flow-tone, var(--line));
   border-radius: 0.75rem;
-  background: var(--surface);
+  background: var(--flow-surface, var(--surface));
   box-shadow: 0 5px 14px #0d132014;
+  cursor: pointer;
   transition:
     box-shadow 170ms,
     border-color 170ms;
 }
 
 .workflow-node[data-selected="true"] {
-  border-color: var(--accent);
+  border-color: var(--flow-tone, var(--accent));
   box-shadow:
-    0 0 0 2px var(--surface-selected),
+    0 0 0 2px var(--flow-surface, var(--surface-selected)),
     0 5px 14px #0d132014;
 }
 
@@ -257,7 +262,7 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
 }
 
 .workflow-node-title svg {
-  color: var(--accent);
+  color: var(--flow-tone, var(--accent));
 }
 
 .workflow-node-description {
@@ -277,17 +282,58 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  color: var(--text-secondary);
+  color: var(--flow-label, var(--flow-tone, var(--text-secondary)));
   font-size: 0.73rem;
   font-weight: 590;
 }
 
-.workflow-status[data-kind="saved"] {
-  color: var(--saved);
+.workflow-app [data-kind="saved"],
+.workflow-link--saved {
+  --flow-tone: var(--saved);
 }
 
-.workflow-status[data-kind="blocked"] {
-  color: var(--blocked);
+.workflow-app [data-kind="blocked"] {
+  --flow-tone: var(--blocked);
+}
+
+.workflow-app [data-kind="running"],
+.workflow-link--running {
+  --flow-tone: var(--graph-active);
+  --flow-surface: color-mix(in srgb, var(--brand-alpha-weak) 60%, var(--surface));
+}
+
+.workflow-app [data-kind="review"],
+.workflow-link--review {
+  --flow-tone: var(--graph-review);
+  --flow-surface: color-mix(in srgb, var(--warning-alpha-weak) 60%, var(--surface));
+}
+
+.workflow-app [data-kind="failed"],
+.workflow-link--failed {
+  --flow-tone: var(--graph-error);
+  --flow-label: var(--danger-on-background-medium);
+  --flow-surface: color-mix(in srgb, var(--danger-alpha-weak) 60%, var(--surface));
+}
+
+:is(.workflow-node, .workflow-task)[data-kind="running"]::after {
+  position: absolute;
+  inset: -2px;
+  border: 1px solid var(--graph-active);
+  border-radius: inherit;
+  animation: workflow-activity 1.6s ease-out infinite;
+  pointer-events: none;
+  content: "";
+}
+
+@keyframes workflow-activity {
+  from {
+    box-shadow: 0 0 0 0 var(--graph-active);
+    opacity: 0.65;
+  }
+  to {
+    box-shadow: 0 0 0 6px var(--graph-active);
+    opacity: 0;
+  }
 }
 
 .graph-icon-button {
@@ -328,9 +374,9 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
   align-items: center;
   gap: 0.5rem;
   padding-inline: 0.65rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--flow-tone, var(--line));
   border-radius: 0.4rem;
-  background: var(--surface);
+  background: var(--flow-surface, var(--surface));
   color: var(--text);
   text-align: left;
   font-size: 0.72rem;
@@ -339,9 +385,14 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
 
 .workflow-section button:hover,
 .workflow-section button[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--surface-selected);
-  color: var(--accent);
+  border-color: var(--flow-tone, var(--accent));
+  background: var(--flow-surface, var(--surface-selected));
+  color: var(--flow-label, var(--flow-tone, var(--accent)));
+}
+
+.workflow-task {
+  position: relative;
+  border-radius: 0.4rem;
 }
 
 .workflow-task-title {
@@ -366,8 +417,16 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
 
 .workflow-stage-link .react-flow__edge-path,
 .workflow-section-link .react-flow__edge-path {
-  stroke: var(--graph-link);
-  stroke-width: 1.5;
+  stroke: var(--flow-tone, var(--graph-link));
+  stroke-width: 1.75;
+}
+
+.workflow-link--running .react-flow__edge-path {
+  stroke-width: 2.5;
+}
+
+.workflow-canvas .workflow-link--running.animated .react-flow__edge-path {
+  animation-duration: 0.8s;
 }
 
 .workflow-section-link {
@@ -393,6 +452,12 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
 .workflow-inspector {
   padding: 1.4rem 1.22rem;
   border-left: 1px solid var(--line);
+}
+
+@media (width > 1050px) {
+  .workflow-app:has(> .workflow-inspector:not([hidden])) {
+    grid-template-columns: 214px minmax(0, 1fr) clamp(340px, 28vw, 500px);
+  }
 }
 
 .workflow-inspector h2 {
@@ -479,5 +544,10 @@ body:has(.workflow-intake-sheet) > * .dropdown-portal {
   .workflow-section,
   .workflow-section-link {
     transition: none;
+  }
+
+  :is(.workflow-node, .workflow-task)[data-kind="running"]::after,
+  .workflow-canvas .workflow-link--running.animated .react-flow__edge-path {
+    animation: none;
   }
 }

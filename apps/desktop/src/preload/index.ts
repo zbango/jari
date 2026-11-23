@@ -32,8 +32,11 @@ const workflows: WorkflowApi = {
   answerPlan: (id, answer) => ipcRenderer.invoke(workflowChannels.answerPlan, id, answer),
   generatePlanReview: (id) => ipcRenderer.invoke(workflowChannels.generatePlanReview, id),
   approvePlan: (id) => ipcRenderer.invoke(workflowChannels.approvePlan, id),
-  startBuild: (id) => ipcRenderer.invoke(workflowChannels.startBuild, id),
+  startBuild: (id, commitBaseline) =>
+    ipcRenderer.invoke(workflowChannels.startBuild, id, commitBaseline),
   reviewBuildTask: (id, input) => ipcRenderer.invoke(workflowChannels.reviewBuildTask, id, input),
+  readBuildCommitDiff: (id, taskId, file) =>
+    ipcRenderer.invoke(workflowChannels.readBuildCommitDiff, id, taskId, file),
   create: (input) => ipcRenderer.invoke(workflowChannels.create, input),
 };
 

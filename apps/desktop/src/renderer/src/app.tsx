@@ -7,7 +7,7 @@ import type {
   WorkflowProvider,
   WorkflowRecord,
 } from "@agent-desktop/shared";
-import { useToast } from "@once-ui-system/core";
+import { parseMascotDesign, useToast } from "@once-ui-system/core";
 import { Button } from "@once-ui-system/core/components/Button";
 import { Column } from "@once-ui-system/core/components/Column";
 import { Dialog } from "@once-ui-system/core/components/Dialog";
@@ -16,11 +16,16 @@ import { Icon } from "@once-ui-system/core/components/Icon";
 import { IconButton } from "@once-ui-system/core/components/IconButton";
 import { Row } from "@once-ui-system/core/components/Row";
 import { Text } from "@once-ui-system/core/components/Text";
-import { Activity, useEffect, useRef, useState } from "react";
+import { Activity, useEffect, useLayoutEffect, useRef, useState } from "react";
 import icon from "../../../resources/icon.png?url";
 import { KnowledgePage } from "./knowledge-page";
 import { SettingsPage } from "./settings-page";
 import { PlanReplay } from "./workflow/plan-replay";
+import {
+  defaultMascotDesign,
+  MascotDesignContext,
+  mascotStorageKey,
+} from "./workflow/provider-activity";
 import { ProviderMessages } from "./workflow/provider-messages";
 import type { Selection } from "./workflow/stages";
 import { WorkflowDetails } from "./workflow/workflow-details";
@@ -42,6 +47,14 @@ function readDefaultProvider(): WorkflowProvider {
   return "codex";
 }
 
+function readMascotDesign() {
+  try {
+    return parseMascotDesign(localStorage.getItem(mascotStorageKey));
+  } catch {
+    return defaultMascotDesign;
+  }
+}
+
 function isWorkflowRunning({ plan, build }: WorkflowRecord) {
   return (
     plan?.state === "running" ||
@@ -57,10 +70,13 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   const historyRevision = useRef(0);
   const settingsButton = useRef<HTMLButtonElement>(null);
   const knowledgeButton = useRef<HTMLButtonElement>(null);
+  const inspector = useRef<HTMLElement>(null);
+  const inspectedWorkflow = useRef<string | null>(null);
   const [knowledge, setKnowledge] = useState<KnowledgeNote[]>();
   const [knowledgeError, setKnowledgeError] = useState("");
   const [knowledgeAttempt, setKnowledgeAttempt] = useState(0);
   const [defaultProvider, setDefaultProvider] = useState(readDefaultProvider);
+  const [mascotDesign, setMascotDesign] = useState(readMascotDesign);
   const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [intakeOpen, setIntakeOpen] = useState(false);
@@ -74,10 +90,16 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [selection, setSelection] = useState<Selection>({ stage: "idea" });
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [canvasSession, setCanvasSession] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
+
+  useLayoutEffect(() => {
+    inspectedWorkflow.current = currentId;
+    if (inspector.current) inspector.current.scrollTop = 0;
+  }, [currentId, selection.stage, selection.section, selection.taskId]);
 
   useEffect(() => {
     let active = true;
@@ -237,7 +259,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   const workspaceName = current?.workspacePath.split(/[/\\]/).filter(Boolean).at(-1);
 
   return (
-    <>
+    <MascotDesignContext value={mascotDesign}>
       <Activity mode={page === "workflows" ? "visible" : "hidden"}>
         <main className="workflow-app" data-workflow-app>
           <header className="app-header">
@@ -298,7 +320,12 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                       type="button"
                       className="history-item"
                       aria-pressed={current?.id === workflow.id}
-                      onClick={() => setCurrentId(workflow.id)}
+                      onClick={() => {
+                        if (workflow.id === currentId) return;
+                        setCurrentId(workflow.id);
+                        setSelection({ stage: "idea" });
+                        setCanvasSession((session) => session + 1);
+                      }}
                     >
                       <Icon name="document" size="s" decorative />
                       <span>
@@ -349,6 +376,17 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                     >
                       Open in Cursor
                     </Button>
+                    <Button
+                      type="button"
+                      size="s"
+                      variant="secondary"
+                      suffixIcon={inspectorOpen ? "chevronRight" : "chevronLeft"}
+                      aria-controls="workflow-details"
+                      aria-expanded={inspectorOpen}
+                      onClick={() => setInspectorOpen((open) => !open)}
+                    >
+                      {inspectorOpen ? "Hide details" : "Show details"}
+                    </Button>
                   </Row>
                 </header>
                 <WorkflowGraph
@@ -360,7 +398,13 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                   onSelect={setSelection}
                 />
               </div>
-              <aside className="workflow-inspector" aria-label="Workflow details">
+              <aside
+                id="workflow-details"
+                ref={inspector}
+                className="workflow-inspector"
+                aria-label="Workflow details"
+                hidden={!inspectorOpen}
+              >
                 <WorkflowDetails
                   key={current.id}
                   workflow={current}
@@ -370,16 +414,23 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                   openPlanReview={() => openPlanReview(current.id)}
                   exportTranscript={exportTranscript}
                   readTranscript={api.readTranscript}
-                  providerLive={isWorkflowRunning(current)}
+                  readCommitDiff={api.readBuildCommitDiff}
                   retryPlan={() => retryPlan(current.id)}
                   answerPlan={(answer) => answerPlan(current.id, answer)}
-                  startBuild={async () => {
-                    updateWorkflow(await api.startBuild(current.id));
-                    setSelection({ stage: "build" });
+                  startBuild={async (commitBaseline) => {
+                    updateWorkflow(
+                      await (commitBaseline
+                        ? api.startBuild(current.id, true)
+                        : api.startBuild(current.id)),
+                    );
                   }}
                   reviewBuildTask={async (input) => {
                     updateWorkflow(await api.reviewBuildTask(current.id, input));
-                    if (!input.feedback) setSelection({ stage: "build" });
+                    if (!input.feedback && inspectedWorkflow.current === current.id) {
+                      setSelection((selected) =>
+                        selected.taskId === input.taskId ? { stage: "build" } : selected,
+                      );
+                    }
                   }}
                 />
               </aside>
@@ -463,7 +514,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
       )}
       {review && (
         <Dialog
-          className="workflow-intake-sheet"
+          data-workflow-plan-review
           open
           title="Review plan"
           description={`Step 3 of 3 · ${review.request}`}
@@ -531,6 +582,10 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
             localStorage.setItem(defaultProviderKey, provider);
             setDefaultProvider(provider);
           }}
+          onMascotChange={(design) => {
+            localStorage.setItem(mascotStorageKey, JSON.stringify(design));
+            setMascotDesign(design);
+          }}
           onBack={() => {
             setPage("workflows");
             requestAnimationFrame(() => settingsButton.current?.focus());
@@ -564,6 +619,6 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
           }}
         />
       )}
-    </>
+    </MascotDesignContext>
   );
 }

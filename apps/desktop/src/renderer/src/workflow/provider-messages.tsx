@@ -1,13 +1,18 @@
 import { workflowProviders } from "@agent-desktop/shared";
-import type { ProviderTranscriptEntry, WorkflowApi, WorkflowRecord } from "@agent-desktop/shared";
+import type {
+  ProviderRunMetric,
+  ProviderTranscriptEntry,
+  WorkflowApi,
+  WorkflowRecord,
+} from "@agent-desktop/shared";
 import { Accordion } from "@once-ui-system/core/components/Accordion";
 import { Button } from "@once-ui-system/core/components/Button";
 import { Column } from "@once-ui-system/core/components/Column";
 import { Feedback } from "@once-ui-system/core/components/Feedback";
 import { Row } from "@once-ui-system/core/components/Row";
-import { StatusIndicator } from "@once-ui-system/core/components/StatusIndicator";
 import { Text } from "@once-ui-system/core/components/Text";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ProviderActivity } from "./provider-activity";
 import { workflowError } from "./workflow-error";
 
 const messageLabels = {
@@ -18,20 +23,81 @@ const messageLabels = {
   session: "Provider session ID",
 } satisfies Record<ProviderTranscriptEntry["kind"], string>;
 
+const runStatus = {
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  interrupted: "Interrupted",
+} satisfies Record<ProviderRunMetric["status"], string>;
+
+function formatDuration(ms: number) {
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function ProviderTimings({ runs }: { runs: ProviderRunMetric[] }) {
+  const total = runs.reduce((sum, run) => sum + (run.durationMs ?? 0), 0);
+  const hasTimings = runs.some(({ durationMs }) => durationMs !== null);
+  return (
+    <Column role="region" aria-label="Provider call durations" gap="8" fillWidth>
+      <Row gap="8" wrap horizontal="between" vertical="center">
+        <Text textVariant="label-strong-s">Provider call durations</Text>
+        {hasTimings && (
+          <Text textVariant="label-default-s" onBackground="neutral-weak">
+            Total recorded time {formatDuration(total)}
+          </Text>
+        )}
+      </Row>
+      <Column
+        maxHeight="12rem"
+        overflowY="auto"
+        gap="8"
+        padding="12"
+        radius="m"
+        border="neutral-alpha-weak"
+      >
+        {runs.map((run) => (
+          <Row key={run.runId} gap="8" wrap horizontal="between" vertical="center">
+            <Text textVariant="body-default-s">
+              {run.taskId === null
+                ? run.phase
+                : `${run.phase} · Task ${run.taskId} · Attempt ${run.attempt}`}
+            </Text>
+            <Text
+              textVariant="label-default-s"
+              onBackground={run.status === "failed" ? "danger-strong" : "neutral-weak"}
+            >
+              {runStatus[run.status]} ·{" "}
+              {run.durationMs === null ? "Duration unavailable" : formatDuration(run.durationMs)}
+            </Text>
+          </Row>
+        ))}
+      </Column>
+    </Column>
+  );
+}
+
 function MessageFeed({
   id,
   provider,
   workflowId,
   live,
+  phase,
+  taskId,
   readTranscript,
 }: {
   id: string;
   provider: string;
   workflowId: string;
   live: boolean;
+  phase?: "Plan" | "Build";
+  taskId?: string;
   readTranscript: WorkflowApi["readTranscript"];
 }) {
   const [entries, setEntries] = useState<ProviderTranscriptEntry[]>([]);
+  const [runs, setRuns] = useState<ProviderRunMetric[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -44,14 +110,19 @@ function MessageFeed({
     let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
       try {
+        const matches = (item: Pick<ProviderTranscriptEntry, "phase" | "taskId">) =>
+          (!phase || (phase === "Plan" ? item.phase !== "Build" : item.phase === "Build")) &&
+          (!taskId || item.taskId === taskId);
         let hasMore: boolean;
         do {
           const page = await readTranscript(workflowId, cursor.current);
           if (!active) return;
+          setRuns(page.runs.filter(matches));
           const last = page.entries.at(-1);
           if (last) {
             cursor.current = last.sequence;
-            setEntries((previous) => [...previous, ...page.entries]);
+            const selected = page.entries.filter(matches);
+            if (selected.length) setEntries((previous) => [...previous, ...selected]);
           }
           hasMore = page.hasMore;
         } while (hasMore);
@@ -69,7 +140,7 @@ function MessageFeed({
       active = false;
       clearTimeout(timer);
     };
-  }, [live, readTranscript, retry, workflowId]);
+  }, [live, phase, readTranscript, retry, taskId, workflowId]);
 
   useLayoutEffect(() => {
     const area = scrollArea.current;
@@ -78,12 +149,7 @@ function MessageFeed({
 
   return (
     <Column id={id} gap="8" fillWidth>
-      {live && (
-        <Row role="status" gap="8" vertical="center">
-          <StatusIndicator pulse size="s" tone="brand" />
-          <Text textVariant="body-default-s">Listening to {provider}…</Text>
-        </Row>
-      )}
+      {live && <ProviderActivity label={`Listening to ${provider}…`} state="listening" />}
       {error && (
         <Feedback tone="danger" description={error}>
           <Button type="button" size="s" variant="secondary" onClick={() => setRetry(retry + 1)}>
@@ -91,6 +157,7 @@ function MessageFeed({
           </Button>
         </Feedback>
       )}
+      {!!runs.length && <ProviderTimings runs={runs} />}
       {!error && entries.length === 0 && (
         <Text textVariant="body-default-s" onBackground="neutral-weak">
           {!loaded
@@ -158,11 +225,15 @@ function MessageFeed({
 export function ProviderMessages({
   workflow,
   live,
+  phase,
+  taskId,
   readTranscript,
   exportTranscript,
 }: {
   workflow: WorkflowRecord;
   live: boolean;
+  phase?: "Plan" | "Build";
+  taskId?: string;
   readTranscript: WorkflowApi["readTranscript"];
   exportTranscript(id: string): Promise<void>;
 }) {
@@ -192,11 +263,13 @@ export function ProviderMessages({
       </Row>
       {open && (
         <MessageFeed
-          key={workflow.id}
+          key={`${workflow.id}:${phase ?? ""}:${taskId ?? ""}`}
           id={id}
           provider={workflowProviders[workflow.provider]}
           workflowId={workflow.id}
           live={live}
+          phase={phase}
+          taskId={taskId}
           readTranscript={readTranscript}
         />
       )}

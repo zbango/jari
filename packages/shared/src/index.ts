@@ -22,6 +22,7 @@ export type {
   PlanRevision,
   PlanningOptions,
   PlanningSkill,
+  ProviderRunMetric,
   ProviderTranscriptEntry,
   ReplayPlanInput,
   SimulatedIssueInput,

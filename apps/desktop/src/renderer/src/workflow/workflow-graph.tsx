@@ -15,7 +15,7 @@ import {
 import type { Edge, Node, NodeProps, Viewport } from "@xyflow/react";
 import { useRef, useState } from "react";
 import { buildTaskStatus, stageOrder, stages, stageStatus } from "./stages";
-import type { Selection, Stage } from "./stages";
+import type { Selection, Stage, WorkflowStatusKind } from "./stages";
 
 type StageNodeData = {
   stage: Stage;
@@ -52,14 +52,18 @@ function StageCard({ data }: NodeProps<StageNode>) {
   const stage = stages[data.stage];
   const status = stageStatus(data.stage, data.hasWorkflow, data.plan, data.build);
   return (
-    <div className="workflow-node" data-selected={data.selected} data-stage={data.stage}>
+    <div
+      className="workflow-node"
+      data-selected={data.selected}
+      data-stage={data.stage}
+      data-kind={status.kind}
+    >
       <Handle type="target" position={Position.Left} />
       <button
         className="workflow-node-main nopan"
         type="button"
         aria-pressed={data.selected}
         aria-label={`Inspect ${stage.title}`}
-        onClick={data.select}
       >
         <span className="workflow-node-title">
           <Icon name={stage.icon} size="s" decorative />
@@ -77,7 +81,10 @@ function StageCard({ data }: NodeProps<StageNode>) {
           type="button"
           aria-label={`${data.expanded ? "Collapse" : "Expand"} ${stage.title}`}
           aria-expanded={data.expanded}
-          onClick={data.toggle}
+          onClick={(event) => {
+            event.stopPropagation();
+            data.toggle();
+          }}
         >
           <Icon name={data.expanded ? "chevronUp" : "chevronDown"} size="xs" decorative />
         </button>
@@ -97,7 +104,7 @@ function SectionCard({ data }: NodeProps<SectionNode>) {
       inert={!data.shown}
     >
       <Handle type="target" position={Position.Left} />
-      <button className="nopan" type="button" aria-pressed={data.selected} onClick={data.select}>
+      <button className="nopan" type="button" aria-pressed={data.selected}>
         <Icon name="document" size="xs" decorative />
         {data.name}
       </button>
@@ -106,17 +113,22 @@ function SectionCard({ data }: NodeProps<SectionNode>) {
 }
 
 function BuildTaskCard({ data }: NodeProps<BuildTaskNode>) {
-  const { task, shown, selected, select } = data;
+  const { task, shown, selected } = data;
   const status = buildTaskStatus[task.state];
   return (
-    <div className="workflow-section" data-shown={shown} aria-hidden={!shown} inert={!shown}>
+    <div
+      className="workflow-section workflow-task"
+      data-kind={status.kind}
+      data-shown={shown}
+      aria-hidden={!shown}
+      inert={!shown}
+    >
       <Handle type="target" position={Position.Top} />
       <button
         className="nopan"
         type="button"
         aria-label={`Inspect task ${task.id}: ${task.title}`}
         aria-pressed={selected}
-        onClick={select}
       >
         <Column gap="4" minWidth="0">
           <span className="workflow-task-title" title={task.title}>
@@ -131,6 +143,23 @@ function BuildTaskCard({ data }: NodeProps<BuildTaskNode>) {
       <Handle type="source" position={Position.Bottom} />
     </div>
   );
+}
+
+const linkColors: Record<WorkflowStatusKind, string> = {
+  waiting: "var(--graph-link)",
+  running: "var(--graph-active)",
+  review: "var(--graph-review)",
+  saved: "var(--saved)",
+  failed: "var(--graph-error)",
+  blocked: "var(--graph-link)",
+};
+
+function flowLink(kind: WorkflowStatusKind, className: string, collapsed = false) {
+  return {
+    animated: kind === "running" && !collapsed,
+    markerEnd: { type: MarkerType.ArrowClosed, color: linkColors[kind] },
+    className: `${className} workflow-link--${kind}${collapsed ? " is-collapsed" : ""}`,
+  };
 }
 
 const nodeTypes = { stage: StageCard, section: SectionCard, buildTask: BuildTaskCard };
@@ -229,8 +258,7 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
         source: stage,
         target: nextStage,
         type: "straight",
-        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--graph-link)" },
-        className: "workflow-stage-link",
+        ...flowLink(stageStatus(nextStage, hasWorkflow, plan, build).kind, "workflow-stage-link"),
       });
     }
     if (stage === "build" && tasks.length) {
@@ -258,8 +286,7 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
           sourceHandle: previous ? undefined : "sections",
           target: id,
           type: "smoothstep",
-          markerEnd: { type: MarkerType.ArrowClosed, color: "var(--graph-link)" },
-          className: expanded ? "workflow-section-link" : "workflow-section-link is-collapsed",
+          ...flowLink(buildTaskStatus[task.state].kind, "workflow-section-link", !expanded),
         });
       }
       continue;
@@ -321,6 +348,9 @@ function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        onNodeClick={(_, node) => {
+          if (node.type === "stage" || node.data.shown) node.data.select();
+        }}
         nodesDraggable={false}
         nodesConnectable={false}
         nodesFocusable={false}

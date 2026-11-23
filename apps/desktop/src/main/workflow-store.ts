@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   KnowledgeContext,
   KnowledgeNote,
+  ProviderRunMetric,
   ProviderTranscriptEntry,
   WorkItem,
   WorkflowBuild,
@@ -18,7 +19,7 @@ type StoredWorkflow = Omit<WorkflowRecord, "source" | "plan" | "build" | "knowle
   knowledge: string | null;
 };
 type StoredKnowledgeNote = Omit<KnowledgeNote, "paths"> & { paths: string };
-type TranscriptRun =
+export type ProviderRunScope =
   | { phase: "Plan" | "Plan review" }
   | { phase: "Build"; taskId: string; attempt: number };
 export function openWorkflowStore(path: string) {
@@ -66,6 +67,18 @@ export function openWorkflowStore(path: string) {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS workflow_transcript_workflow
         ON workflow_transcript (workflow_id, sequence);
+      CREATE TABLE IF NOT EXISTS workflow_provider_run (
+        run_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL REFERENCES workflows(id),
+        phase TEXT NOT NULL,
+        task_id TEXT,
+        attempt INTEGER,
+        started_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        duration_ms INTEGER
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS workflow_provider_run_workflow
+        ON workflow_provider_run (workflow_id);
       CREATE TABLE IF NOT EXISTS workflow_preferences (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -87,6 +100,21 @@ export function openWorkflowStore(path: string) {
     const removeSnapshot = db.prepare("DELETE FROM workflow_knowledge WHERE id = ?");
     const removeBuild = db.prepare("DELETE FROM workflow_build WHERE id = ?");
     const removeTranscript = db.prepare("DELETE FROM workflow_transcript WHERE workflow_id = ?");
+    const removeRuns = db.prepare("DELETE FROM workflow_provider_run WHERE workflow_id = ?");
+    const insertRun = db.prepare(`
+      INSERT INTO workflow_provider_run
+        (run_id, workflow_id, phase, task_id, attempt, started_at, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'running')
+    `);
+    const updateRun = db.prepare(`
+      UPDATE workflow_provider_run SET status = ?, duration_ms = ?
+      WHERE run_id = ? AND status = 'running'
+    `);
+    const readRuns = db.prepare(`
+      SELECT run_id AS runId, phase, task_id AS taskId, attempt, started_at AS startedAt,
+        status, duration_ms AS durationMs
+      FROM workflow_provider_run WHERE workflow_id = ? ORDER BY rowid
+    `);
     const appendTranscript = db.prepare(`
       INSERT INTO workflow_transcript
         (workflow_id, run_id, phase, task_id, attempt, created_at, kind, text)
@@ -202,6 +230,7 @@ export function openWorkflowStore(path: string) {
           removeSnapshot.run(id);
           removeBuild.run(id);
           removeTranscript.run(id);
+          removeRuns.run(id);
           removeWorkflow.run(id);
           db.exec("COMMIT");
         } catch (error) {
@@ -212,8 +241,7 @@ export function openWorkflowStore(path: string) {
       saveBuild(id: string, build: WorkflowBuild): void {
         saveBuild.run(id, JSON.stringify(build));
       },
-      transcriptWriter(id: string, run: TranscriptRun): TranscriptWriter {
-        const runId = randomUUID();
+      transcriptWriter(id: string, run: ProviderRunScope, runId = randomUUID()): TranscriptWriter {
         return (kind, text) => {
           appendTranscript.run(
             id,
@@ -226,6 +254,28 @@ export function openWorkflowStore(path: string) {
             text,
           );
         };
+      },
+      startProviderRun(id: string, run: ProviderRunScope) {
+        const runId = randomUUID();
+        insertRun.run(
+          runId,
+          id,
+          run.phase,
+          run.phase === "Build" ? run.taskId : null,
+          run.phase === "Build" ? run.attempt : null,
+          new Date().toISOString(),
+        );
+        return { runId, write: this.transcriptWriter(id, run, runId) };
+      },
+      finishProviderRun(
+        runId: string,
+        status: Exclude<ProviderRunMetric["status"], "running">,
+        durationMs: number,
+      ): void {
+        updateRun.run(status, durationMs, runId);
+      },
+      providerRuns(id: string): ProviderRunMetric[] {
+        return readRuns.all(id) as unknown as ProviderRunMetric[];
       },
       transcript(id: string, after = 0, limit = -1): ProviderTranscriptEntry[] {
         return readTranscript.all(id, after, limit) as unknown as ProviderTranscriptEntry[];

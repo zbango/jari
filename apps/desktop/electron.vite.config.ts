@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
+import { codeLanguages } from "./src/renderer/src/workflow/code-languages";
 
 const host = "127.0.0.1";
 const port = 5173;
@@ -9,6 +10,9 @@ const baseCsp =
   "default-src 'none'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'";
 // Tiptap 3.35.0 injects this fixed ProseMirror stylesheet through Once UI's editor.
 const editorStyleHash = "'sha256-PlumsSlvJ7vvWzjqibGAYKq92O3y/4JTxWWsWJvyUYA='";
+const prismGrammars = [...new Set(codeLanguages.values())].map(
+  (language) => [language, `prismjs/components/prism-${language}`] as const,
+);
 
 export default defineConfig(({ command }) => {
   const csp =
@@ -34,11 +38,27 @@ export default defineConfig(({ command }) => {
           "prismjs/plugins/line-highlight/prism-line-highlight",
           "prismjs/plugins/line-numbers/prism-line-numbers",
           "prismjs/plugins/diff-highlight/prism-diff-highlight",
+          ...prismGrammars.map(([, specifier]) => specifier),
         ],
       },
       build: { minify: true },
       server: { host, port, strictPort: true, headers: { "Content-Security-Policy": csp } },
       plugins: [
+        {
+          name: "once-ui-prism-grammars",
+          enforce: "pre",
+          transform(source, id) {
+            if (!id.endsWith("/@once-ui-system/core/dist/modules/code/CodeBlock.impl.js")) return;
+            // Vite cannot bundle Once UI's variable bare import. Give it static module paths.
+            const loaders = prismGrammars.map(
+              ([language, specifier]) => `${language}: () => import(${JSON.stringify(specifier)})`,
+            );
+            return source.replace(
+              "import(`prismjs/components/prism-${actualLang}`)",
+              `({ ${loaders.join(", ")} })[actualLang]()`,
+            );
+          },
+        },
         {
           name: "desktop-content-security-policy",
           transformIndexHtml: {

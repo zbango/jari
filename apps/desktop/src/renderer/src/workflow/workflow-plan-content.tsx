@@ -6,13 +6,12 @@ import { Column } from "@once-ui-system/core/components/Column";
 import { Feedback } from "@once-ui-system/core/components/Feedback";
 import { Heading } from "@once-ui-system/core/components/Heading";
 import { InlineCode } from "@once-ui-system/core/components/InlineCode";
-import { Row } from "@once-ui-system/core/components/Row";
-import { StatusIndicator } from "@once-ui-system/core/components/StatusIndicator";
 import { Text } from "@once-ui-system/core/components/Text";
 import { Textarea } from "@once-ui-system/core/components/Textarea";
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { PlanReviewSections } from "./plan-review-sections";
+import { ProviderActivity } from "./provider-activity";
 import { workflowError } from "./workflow-error";
 
 function PlanReply({ onAnswer }: { onAnswer(answer: string): Promise<void> }) {
@@ -102,19 +101,13 @@ export function WorkflowPlanContent({
     <Column gap="16">
       {!workflow.plan && <Text>No plan has been generated for this workflow.</Text>}
       {workflow.plan?.state === "running" && (
-        <Row role="status" gap="8" vertical="center">
-          {detailed && <StatusIndicator pulse size="s" tone="brand" />}
-          <Text>{workflowProviders[workflow.provider]} is preparing a plan.</Text>
-        </Row>
+        <ProviderActivity label={`${workflowProviders[workflow.provider]} is preparing a plan.`} />
       )}
       {detailed &&
         workflow.plan?.state === "ready" &&
         !workflow.plan.review &&
         (workflow.plan.reviewAttempt?.state === "running" || generating ? (
-          <Row role="status" gap="8" vertical="center">
-            <StatusIndicator pulse size="s" tone="brand" />
-            <Text>Preparing the structured review…</Text>
-          </Row>
+          <ProviderActivity label="Preparing the structured review…" />
         ) : (
           <Feedback
             tone={
@@ -185,29 +178,34 @@ export function WorkflowPlanContent({
           </Column>
         </Accordion>
       )}
-      {!!workflow.knowledge?.length && (
-        <Accordion title="Company Knowledge attached" titleVariant="label-default-s">
-          <Column gap="16">
-            {workflow.knowledge.map(({ area, title, bodyText, paths }, index) => (
-              <Column key={index} gap="4">
-                <Text textVariant="label-strong-s">
-                  {area} · {title}
-                </Text>
-                {bodyText && (
-                  <Text as="p" textVariant="body-default-s" className="request-body">
-                    {bodyText}
-                  </Text>
-                )}
-                {paths.map((path) => (
-                  <InlineCode key={path} className="request-body">
-                    {path}
-                  </InlineCode>
-                ))}
-              </Column>
+      <WorkflowKnowledge notes={workflow.knowledge} />
+    </Column>
+  );
+}
+
+export function WorkflowKnowledge({ notes }: { notes: WorkflowRecord["knowledge"] }) {
+  if (!notes?.length) return null;
+  return (
+    <Accordion title="Company Knowledge attached" titleVariant="label-default-s">
+      <Column gap="16">
+        {notes.map(({ area, title, bodyText, paths }, index) => (
+          <Column key={index} gap="4">
+            <Text textVariant="label-strong-s">
+              {area} · {title}
+            </Text>
+            {bodyText && (
+              <Text as="p" textVariant="body-default-s" className="request-body">
+                {bodyText}
+              </Text>
+            )}
+            {paths.map((path) => (
+              <InlineCode key={path} className="request-body">
+                {path}
+              </InlineCode>
             ))}
           </Column>
-        </Accordion>
-      )}
-    </Column>
+        ))}
+      </Column>
+    </Accordion>
   );
 }

@@ -46,10 +46,9 @@ it("runs and revises one approved Build task at a time", async () => {
   mkdirSync(workspace);
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: workspace, encoding: "utf8" }).trim();
-  git("init", "-q");
-  git("config", "user.email", "jari-test@example.com");
-  git("config", "user.name", "Jari Test");
-  git("config", "commit.gpgsign", "false");
+  writeFileSync(join(workspace, "README.md"), "# Existing workspace\n");
+  writeFileSync(join(workspace, ".gitignore"), "fixture.local\n");
+  writeFileSync(join(workspace, "fixture.local"), "Ignored fixture\n");
   getPath.mockReturnValue(directory);
   showOpenDialog.mockResolvedValue({ filePaths: [workspace], canceled: false });
   vi.mocked(runPlanning)
@@ -57,7 +56,7 @@ it("runs and revises one approved Build task at a time", async () => {
     .mockResolvedValueOnce({ state: "ready", text: "Scaffold Pocket Tasks." });
   const review = {
     proposal: "Scaffold a small tracker.",
-    findings: ["The workspace is empty."],
+    findings: ["The workspace has a README."],
     considerations: [],
     steps: [
       { title: "Add the entry point", detail: "Add the task view.", files: ["src/main.ts"] },
@@ -147,11 +146,29 @@ it("runs and revises one approved Build task at a time", async () => {
     await expect(invoke(workflowChannels.startBuild, record.id)).resolves.toMatchObject({
       build: { state: "running", tasks: [{ state: "running" }, { state: "queued" }] },
     });
+    const waitForBaseline = (files: string[]) =>
+      vi.waitFor(async () =>
+        expect((await list())[0]?.build).toMatchObject({ state: "failed", baselineFiles: files }),
+      );
+    await waitForBaseline([".gitignore", "README.md"]);
+    expect(git("log", "--all", "--format=%s")).toBe("");
+    expect(runBuild).not.toHaveBeenCalled();
+    writeFileSync(join(workspace, "notes.txt"), "Added after the preview.\n");
+    await invoke(workflowChannels.startBuild, record.id, true);
+    await waitForBaseline([".gitignore", "README.md", "notes.txt"]);
+    expect(git("log", "--all", "--format=%s")).toBe("");
+    expect(runBuild).not.toHaveBeenCalled();
+    git("config", "user.email", "jari-test@example.com");
+    git("config", "user.name", "Jari Test");
+    git("config", "commit.gpgsign", "false");
+    await invoke(workflowChannels.startBuild, record.id, true);
     const waitForReview = (tasks: object[]) =>
       vi.waitFor(async () =>
         expect((await list())[0]?.build).toMatchObject({ state: "review", tasks }),
       );
     await waitForReview([{ state: "review", attempt: 1 }, { state: "queued" }]);
+    expect(git("log", "--format=%s")).toBe("chore: record existing workspace");
+    expect(git("ls-tree", "-r", "--name-only", "HEAD")).toBe(".gitignore\nREADME.md\nnotes.txt");
     expect(git("diff", "--cached", "--name-only")).toBe("");
     expect(runBuild).toHaveBeenCalledExactlyOnceWith(
       "codex",
@@ -237,13 +254,28 @@ it("runs and revises one approved Build task at a time", async () => {
     ]);
     await invoke(workflowChannels.reviewBuildTask, record.id, { taskId: "2", attempt: 1 });
     expect(git("log", "--format=%s")).toBe(
-      "feat: Persist tasks\nfix: add an accessible task label",
+      "feat: Persist tasks\nfix: add an accessible task label\nchore: record existing workspace",
     );
     expect(git("diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "HEAD^")).toBe(
       "src/main.ts",
     );
     expect(git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")).toBe("src/storage.ts");
     expect(git("status", "--porcelain")).toBe("");
+    const firstFile = join(workspace, "src/main.ts");
+    const settledContents = readFileSync(firstFile);
+    writeFileSync(firstFile, "A later, uncommitted edit.");
+    const committedDiff = await invoke(
+      workflowChannels.readBuildCommitDiff,
+      record.id,
+      "1",
+      "src/main.ts",
+    );
+    expect(committedDiff).toContain("+Added an accessible label.");
+    expect(committedDiff).not.toContain("A later, uncommitted edit.");
+    await expect(
+      invoke(workflowChannels.readBuildCommitDiff, record.id, "1", "src/storage.ts"),
+    ).rejects.toThrow(/approved commit/);
+    writeFileSync(firstFile, settledContents);
     expect((await list())[0]?.build).toMatchObject({
       state: "completed",
       tasks: [
@@ -262,6 +294,7 @@ it("runs and revises one approved Build task at a time", async () => {
     showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath });
     await expect(invoke(workflowChannels.exportTranscript, record.id)).resolves.toBe(true);
     const exported = readFileSync(filePath, "utf8");
+    expect(exported).toContain("Provider call durations");
     expect(exported).toContain("Build · Task 1 · Attempt 1");
     expect(exported).toContain("Build · Task 1 · Attempt 2");
     expect(exported).toContain("Build · Task 2 · Attempt 1");
@@ -271,6 +304,19 @@ it("runs and revises one approved Build task at a time", async () => {
     const reopened = openWorkflowStore(join(directory, "workflows.sqlite"));
     try {
       expect(reopened.transcript(record.id)).toHaveLength(6);
+      const runs = reopened.providerRuns(record.id);
+      expect(
+        runs.map(({ phase, taskId, attempt, status }) => [phase, taskId, attempt, status]),
+      ).toEqual([
+        ["Plan", null, null, "completed"],
+        ["Plan", null, null, "completed"],
+        ["Plan review", null, null, "completed"],
+        ["Build", "1", 1, "completed"],
+        ["Build", "1", 2, "completed"],
+        ["Build", "2", 1, "completed"],
+      ]);
+      expect(runs.every(({ durationMs }) => durationMs !== null && durationMs >= 0)).toBe(true);
+      expect(reopened.transcript(record.id)[0]?.runId).toBe(runs[3]?.runId);
       const append = reopened.transcriptWriter(record.id, {
         phase: "Build",
         taskId: "2",
@@ -292,6 +338,7 @@ it("runs and revises one approved Build task at a time", async () => {
         {
           entries: [],
           hasMore: false,
+          runs: [],
         },
       );
       await expect(invoke(workflowChannels.readTranscript, record.id, -1)).rejects.toThrow(/valid/);
@@ -334,6 +381,7 @@ it("runs and revises one approved Build task at a time", async () => {
       });
       await invoke(workflowChannels.removeWorkflow, record.id);
       expect(reopened.transcript(record.id)).toEqual([]);
+      expect(reopened.providerRuns(record.id)).toEqual([]);
     } finally {
       reopened.close();
     }

@@ -1,12 +1,14 @@
 import { maxPlanAnswerLength } from "@agent-desktop/shared";
 import type {
   BuildTaskReviewInput,
+  WorkflowApi,
   WorkflowBuildTask,
   WorkflowRecord,
 } from "@agent-desktop/shared";
 import { Accordion } from "@once-ui-system/core/components/Accordion";
 import { Button } from "@once-ui-system/core/components/Button";
 import { Column } from "@once-ui-system/core/components/Column";
+import { Dialog } from "@once-ui-system/core/components/Dialog";
 import { Feedback } from "@once-ui-system/core/components/Feedback";
 import { Heading } from "@once-ui-system/core/components/Heading";
 import { Input } from "@once-ui-system/core/components/Input";
@@ -15,20 +17,89 @@ import { Row } from "@once-ui-system/core/components/Row";
 import { StatusIndicator } from "@once-ui-system/core/components/StatusIndicator";
 import { Text } from "@once-ui-system/core/components/Text";
 import { Textarea } from "@once-ui-system/core/components/Textarea";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { CodeDiff } from "./code-diff";
+import { ProviderActivity } from "./provider-activity";
 import { buildTaskStatus } from "./stages";
 import { workflowError } from "./workflow-error";
 
+function CommitFileDialog({
+  workflowId,
+  taskId,
+  path,
+  commit,
+  readDiff,
+  onClose,
+}: {
+  workflowId: string;
+  taskId: string;
+  path: string;
+  commit: { hash: string; subject: string };
+  readDiff: WorkflowApi["readBuildCommitDiff"];
+  onClose(): void;
+}) {
+  const [diff, setDiff] = useState<string>();
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void readDiff(workflowId, taskId, path).then(
+      (value) => {
+        if (active) setDiff(value);
+      },
+      (failure: unknown) => {
+        if (active) setError(workflowError(failure, "The committed diff could not be loaded."));
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [path, readDiff, taskId, workflowId]);
+
+  return (
+    <Dialog
+      open
+      title="Committed file changes"
+      description={`${commit.hash.slice(0, 12)} · ${commit.subject}`}
+      maxWidth="58rem"
+      onClose={onClose}
+    >
+      <Column gap="12">
+        <InlineCode className="request-body">{path}</InlineCode>
+        {error ? (
+          <Feedback tone="danger" description={error} />
+        ) : diff === undefined ? (
+          <Row role="status" gap="8" vertical="center">
+            <StatusIndicator pulse size="s" tone="brand" />
+            <Text>Loading committed changes…</Text>
+          </Row>
+        ) : diff ? (
+          <CodeDiff diff={diff} path={path} label="Commit diff" />
+        ) : (
+          <Text>Git returned no changes for this file in the commit.</Text>
+        )}
+      </Column>
+    </Dialog>
+  );
+}
+
 function BuildTaskDetail({
   task,
+  workflowId,
   reviewTask,
+  readCommitDiff,
+  showHeading,
 }: {
   task: WorkflowBuildTask;
+  workflowId: string;
   reviewTask(input: BuildTaskReviewInput): Promise<void>;
+  readCommitDiff: WorkflowApi["readBuildCommitDiff"];
+  showHeading: boolean;
 }) {
   const feedbackId = useId();
   const commitSubjectId = useId();
   const gitReview = task.git?.review;
+  const commit = task.git?.commit;
+  const [selectedFile, setSelectedFile] = useState<string>();
   const [editedSubject, setEditedSubject] = useState<string>();
   const commitSubject = editedSubject ?? gitReview?.subject ?? "";
   const [editing, setEditing] = useState(false);
@@ -57,12 +128,21 @@ function BuildTaskDetail({
   return (
     <Column gap="12">
       <Column gap="4">
-        <Heading as="h3" textVariant="heading-strong-s">
-          {task.id}. {task.title}
-        </Heading>
-        <Text textVariant="label-default-s" onBackground="neutral-weak">
-          {buildTaskStatus[task.state].label}
-        </Text>
+        {showHeading && (
+          <>
+            <Heading as="h3" textVariant="heading-strong-s">
+              {task.id}. {task.title}
+            </Heading>
+            <Text textVariant="label-default-s" onBackground="neutral-weak">
+              {buildTaskStatus[task.state].label}
+            </Text>
+          </>
+        )}
+        {task.attempt > 0 && (
+          <Text textVariant="label-default-s" onBackground="neutral-weak">
+            Attempt {task.attempt}
+          </Text>
+        )}
         <Text as="p" className="request-body">
           {task.detail}
         </Text>
@@ -78,14 +158,13 @@ function BuildTaskDetail({
         </Column>
       )}
       {task.state === "running" && (
-        <Row role="status" gap="8" vertical="center">
-          <StatusIndicator pulse size="s" tone="brand" />
-          <Text>
-            {task.revisions.length
+        <ProviderActivity
+          label={
+            task.revisions.length
               ? "The provider is revising this task."
-              : "The provider is implementing this task."}
-          </Text>
-        </Row>
+              : "The provider is implementing this task."
+          }
+        />
       )}
       {task.summary && (
         <Column gap="4">
@@ -95,13 +174,40 @@ function BuildTaskDetail({
           </Text>
         </Column>
       )}
-      {task.git?.commit && (
+      {commit && (
         <Column gap="4">
           <Text textVariant="label-strong-s">Git commit</Text>
           <InlineCode className="request-body">
-            {task.git.commit.hash.slice(0, 12)} {task.git.commit.subject}
+            {commit.hash.slice(0, 12)} {commit.subject}
           </InlineCode>
         </Column>
+      )}
+      {commit && !!gitReview?.files.length && (
+        <Accordion title={`Changed files (${gitReview.files.length})`}>
+          {gitReview.files.map((path) => (
+            <Button
+              key={path}
+              type="button"
+              variant="tertiary"
+              size="s"
+              aria-haspopup="dialog"
+              suffixIcon="arrowRight"
+              onClick={() => setSelectedFile(path)}
+            >
+              <InlineCode className="request-body">{path}</InlineCode>
+            </Button>
+          ))}
+        </Accordion>
+      )}
+      {commit && selectedFile && (
+        <CommitFileDialog
+          workflowId={workflowId}
+          taskId={task.id}
+          path={selectedFile}
+          commit={commit}
+          readDiff={readCommitDiff}
+          onClose={() => setSelectedFile(undefined)}
+        />
       )}
       {task.state === "review" && (
         <Column gap="8">
@@ -216,23 +322,26 @@ export function WorkflowBuildContent({
   openPlanReview,
   startBuild,
   reviewTask,
+  readCommitDiff,
 }: {
   workflow: WorkflowRecord;
   taskId?: string;
   openPlanReview(): void;
-  startBuild(): Promise<void>;
+  startBuild(commitBaseline?: boolean): Promise<void>;
   reviewTask(input: BuildTaskReviewInput): Promise<void>;
+  readCommitDiff: WorkflowApi["readBuildCommitDiff"];
 }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
   const { build, workspacePath } = workflow;
+  const baselineFiles = build?.state === "failed" ? build.baselineFiles : undefined;
 
   async function start() {
     if (starting) return;
     setStarting(true);
     setError("");
     try {
-      await startBuild();
+      await startBuild(baselineFiles?.length ? true : undefined);
     } catch (failure) {
       setError(workflowError(failure, "Build could not be started."));
     } finally {
@@ -268,7 +377,7 @@ export function WorkflowBuildContent({
           approved
         </Text>
       )}
-      {build.state === "completed" && (
+      {build.state === "completed" && !taskId && (
         <Text as="p" className="request-body">
           {build.summary}
         </Text>
@@ -277,23 +386,43 @@ export function WorkflowBuildContent({
         <BuildTaskDetail
           key={`${selected.id}:${selected.attempt}`}
           task={selected}
+          workflowId={workflow.id}
           reviewTask={reviewTask}
+          readCommitDiff={readCommitDiff}
+          showHeading={!taskId}
         />
       )}
       {showStart && (!selected || selected.id === active?.id) && (
         <>
-          {build.state === "failed" && <Feedback tone="danger" description={build.message} />}
+          {build.state === "failed" && (
+            <Feedback
+              tone={baselineFiles?.length ? "warning" : "danger"}
+              description={build.message}
+            />
+          )}
           {build.state === "interrupted" && (
             <Feedback
               tone="warning"
               description="The build was interrupted. The workspace may contain partial changes."
             />
           )}
-          <Text as="p">
-            {build.state === "ready"
-              ? "Starting Build lets the selected provider edit files in this workspace."
-              : "Retrying continues the current task using the files already in the workspace."}
-          </Text>
+          {baselineFiles?.length ? (
+            <Accordion title={`Files in the initial commit (${baselineFiles.length})`} defaultOpen>
+              <Column gap="4" maxHeight="12rem" overflowY="auto">
+                {baselineFiles.map((file) => (
+                  <InlineCode key={file} className="request-body">
+                    {file}
+                  </InlineCode>
+                ))}
+              </Column>
+            </Accordion>
+          ) : (
+            <Text as="p">
+              {build.state === "ready"
+                ? "Starting Build lets the selected provider edit files in this workspace."
+                : "Retrying continues the current task using the files already in the workspace."}
+            </Text>
+          )}
           <Button
             type="button"
             prefixIcon="code"
@@ -301,7 +430,11 @@ export function WorkflowBuildContent({
             disabled={starting}
             onClick={() => void start()}
           >
-            {build.state === "ready" ? "Start Build" : "Retry task"}
+            {baselineFiles?.length
+              ? "Commit existing files and start Build"
+              : build.state === "ready"
+                ? "Start Build"
+                : "Retry task"}
           </Button>
         </>
       )}

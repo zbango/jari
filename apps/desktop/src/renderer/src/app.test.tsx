@@ -69,7 +69,8 @@ function fixtureApi(records: WorkflowRecord[] = []): WorkflowApi {
       build: { state: "completed", approvedAt: saved.createdAt, summary: "Implemented the tasks." },
     }),
     reviewBuildTask: vi.fn(),
-    readTranscript: vi.fn().mockResolvedValue({ entries: [], hasMore: false }),
+    readBuildCommitDiff: vi.fn(),
+    readTranscript: vi.fn().mockResolvedValue({ entries: [], hasMore: false, runs: [] }),
     exportTranscript: vi.fn(),
   };
 }
@@ -84,6 +85,61 @@ function renderApp(api: WorkflowApi) {
   );
 }
 
+it("opens the selected committed file's diff in a separate dialog", async () => {
+  const task: WorkflowBuildTask = {
+    id: "1",
+    title: "Update a card",
+    detail: "Persist changes to its title.",
+    files: ["src/main.ts"],
+    state: "approved",
+    attempt: 1,
+    revisions: [],
+    git: {
+      branch: "refs/heads/main",
+      base: null,
+      review: { files: ["src/main.ts"], tree: "reviewed-tree", subject: "fix: save edits" },
+      commit: { hash: "0123456789abcdef", subject: "fix: save edits" },
+    },
+  };
+  const api = fixtureApi([
+    {
+      ...saved,
+      plan: { state: "ready", text: "Fix title saves." },
+      build: {
+        state: "completed",
+        approvedAt: saved.createdAt,
+        summary: "All Build tasks approved.",
+        tasks: [task],
+      },
+    },
+  ]);
+  const patch = "@@ -8 +8 @@\n-save(draft);\n+save(task);\n";
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal(
+    "navigator",
+    new Proxy(navigator, {
+      get(target, property) {
+        return property === "clipboard" ? { writeText } : Reflect.get(target, property, target);
+      },
+    }),
+  );
+  vi.mocked(api.readBuildCommitDiff).mockResolvedValue(patch);
+  renderApp(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Inspect task 1: Update a card" }));
+  const panel = within(screen.getByRole("complementary", { name: "Workflow details" }));
+  fireEvent.click(panel.getByRole("button", { name: "Changed files (1)" }));
+  fireEvent.click(panel.getByRole("button", { name: "src/main.ts" }));
+  const dialog = within(await screen.findByRole("dialog", { name: "Committed file changes" }));
+  expect(dialog.getByText("0123456789ab · fix: save edits")).toBeTruthy();
+  const diff = await dialog.findByRole("region", { name: "Commit diff" });
+  await waitFor(() =>
+    expect(diff.querySelector(".diff-row.added code")?.textContent).toBe("save(task);"),
+  );
+  fireEvent.click(within(diff).getByRole("button", { name: "Copy" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(patch);
+  expect(api.readBuildCommitDiff).toHaveBeenCalledExactlyOnceWith(saved.id, "1", "src/main.ts");
+});
+
 it("shows new provider messages while planning and keeps export available", async () => {
   const api = fixtureApi([saved]);
   const message = {
@@ -96,11 +152,23 @@ it("shows new provider messages while planning and keeps export available", asyn
     kind: "assistant",
     text: "Inspecting the existing setup.",
   } satisfies ProviderTranscriptEntry;
+  const run = {
+    runId: message.runId,
+    phase: message.phase,
+    taskId: message.taskId,
+    attempt: message.attempt,
+    startedAt: saved.createdAt,
+  };
   vi.mocked(api.readTranscript)
-    .mockResolvedValueOnce({ entries: [message], hasMore: false })
+    .mockResolvedValueOnce({
+      entries: [message],
+      hasMore: false,
+      runs: [{ ...run, status: "running", durationMs: 900 }],
+    })
     .mockResolvedValueOnce({
       entries: [{ ...message, sequence: 2, text: "I found the payment view." }],
       hasMore: false,
+      runs: [{ ...run, status: "completed", durationMs: 1250 }],
     });
   vi.mocked(api.exportTranscript).mockResolvedValue(false);
   renderApp(api);
@@ -109,8 +177,11 @@ it("shows new provider messages while planning and keeps export available", asyn
   expect(api.readTranscript).not.toHaveBeenCalled();
   fireEvent.click(panel.getByRole("button", { name: "View live messages" }));
   const feed = within(await panel.findByRole("region", { name: "Provider session messages" }));
+  const timing = within(panel.getByRole("region", { name: "Provider call durations" }));
+  expect(timing.getByText("Running · 900 ms")).toBeTruthy();
   expect(feed.getByText(message.text)).toBeTruthy();
   expect(await feed.findByText("I found the payment view.", {}, { timeout: 2500 })).toBeTruthy();
+  expect(timing.getByText("Completed · 1.3 s")).toBeTruthy();
   expect(api.readTranscript).toHaveBeenNthCalledWith(1, saved.id, 0);
   expect(api.readTranscript).toHaveBeenNthCalledWith(2, saved.id, 1);
   fireEvent.click(panel.getByRole("button", { name: "Export provider transcript" }));
@@ -131,6 +202,30 @@ it("opens the selected workflow workspace in Cursor", async () => {
   fireEvent.click(await screen.findByRole("button", { name: /^Other workspace/ }));
   fireEvent.click(screen.getByRole("button", { name: "Open in Cursor" }));
   expect(api.openWorkspaceInCursor).toHaveBeenCalledExactlyOnceWith(other.id);
+});
+
+it("shows files for the initial Git commit and starts Build after confirmation", async () => {
+  const api = fixtureApi([
+    {
+      ...saved,
+      plan: { state: "ready", text: "Update the existing app." },
+      build: {
+        state: "failed",
+        message:
+          "Review the existing files and create an initial Git commit before starting Build.",
+        approvedAt: saved.createdAt,
+        baselineFiles: ["README.md", "src/main.ts"],
+      },
+    },
+  ]);
+  renderApp(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Inspect Build" }));
+  const panel = within(screen.getByRole("complementary", { name: "Workflow details" }));
+  expect(panel.getByText("README.md")).toBeTruthy();
+  expect(panel.getByText("src/main.ts")).toBeTruthy();
+  expect(api.startBuild).not.toHaveBeenCalled();
+  fireEvent.click(panel.getByRole("button", { name: "Commit existing files and start Build" }));
+  expect(api.startBuild).toHaveBeenCalledExactlyOnceWith(saved.id, true);
 });
 
 it("starts a fresh replay with the selected provider and model", async () => {
@@ -260,7 +355,10 @@ it("starts planning from an editable sample issue without loading Jira", async (
   expect(await screen.findByRole("dialog", { name: "Review plan" })).toBeTruthy();
 });
 
-it("starts the incremental edit scenario from the existing workspace", async () => {
+it.each([
+  ["Edit", "Retrieve the selected task by its stable ID"],
+  ["Delete", "remove only the selected task by ID"],
+])("starts the incremental %s scenario from the existing workspace", async (action, criterion) => {
   const api = fixtureApi();
   renderApp(api);
   const workspace = within(await openWorkspaceStep());
@@ -268,17 +366,18 @@ it("starts the incremental edit scenario from the existing workspace", async () 
   await waitFor(() => expect(simulate.disabled).toBe(false));
   fireEvent.click(simulate);
   const simulated = within(await screen.findByRole("dialog", { name: "Simulate issue" }));
-  await chooseOption("Scenario", "Edit an existing task");
+  await chooseOption("Scenario", `${action} an existing task`);
+  const title = `${action} an existing task in Pocket Tasks`;
   expect(simulated.getByRole<HTMLInputElement>("textbox", { name: "Issue title" }).value).toBe(
-    "Edit an existing task in Pocket Tasks",
+    title,
   );
   const details = simulated.getByRole<HTMLTextAreaElement>("textbox", { name: "Issue details" });
-  expect(details.value).toContain("Retrieve the selected task by its stable ID");
+  expect(details.value).toContain(criterion);
   const description = details.value + "\nKeep the current layout.";
   fireEvent.change(details, { target: { value: description } });
   fireEvent.click(simulated.getByRole("button", { name: "Start Plan" }));
   expect(api.create).toHaveBeenCalledExactlyOnceWith({
-    simulatedIssue: { title: "Edit an existing task in Pocket Tasks", description },
+    simulatedIssue: { title, description },
     workspacePath: saved.workspacePath,
     provider: "codex",
   });
@@ -300,6 +399,14 @@ beforeEach(() => {
       disconnect() {}
     },
   );
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 });
 
 it("selects a workspace before loading Jira and reuses the folder in the next wizard", async () => {
@@ -385,8 +492,10 @@ it("starts a custom plan with the selected model, effort, and installed skill", 
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.removeItem("agent-desktop.default-provider");
+  localStorage.removeItem("agent-desktop.mascot-design");
 });
 
 it("loads active sprint work, shows the issue, and starts the selected provider's plan", async () => {
@@ -541,24 +650,26 @@ it("continues planning with a reply in Step 3 and shows the structured review", 
   expect(api.answerPlan).toHaveBeenCalledExactlyOnceWith(saved.id, answer);
   expect(await dialog.findByText(proposal, {}, { timeout: 3000 })).toBeTruthy();
   expect(dialog.getByRole("heading", { name: "Implementation steps" })).toBeTruthy();
-  fireEvent.click(dialog.getByRole("button", { name: /Update src\/payments.ts/ }));
+  const fileChange = dialog.getByRole("button", { name: /Update src\/payments.ts/ });
+  expect(fileChange.getAttribute("aria-expanded")).toBe("true");
   const diff = await dialog.findByRole("region", { name: "Proposed diff" });
-  const diffText = within(diff).getByLabelText("Diff text");
-  expect([...diffText.querySelectorAll("code")].map(({ textContent }) => textContent)).toEqual([
-    "@@ -12 +20 @@",
-    "-return payment.status;",
-    "+return payment.settlementState;",
-  ]);
-  expect(
-    diffText.querySelector('[data-diff-line="deletion"]')?.firstElementChild?.textContent,
-  ).toBe("12");
-  expect(diffText.querySelector('[data-diff-line="addition"]')?.children[1]?.textContent).toBe(
+  await waitFor(() =>
+    expect([...diff.querySelectorAll("code")].map(({ textContent }) => textContent)).toEqual([
+      "@@ -12 +20 @@",
+      "return payment.status;",
+      "return payment.settlementState;",
+    ]),
+  );
+  expect(diff.querySelector(".diff-row.deleted .diff-line-number")?.textContent).toBe("12");
+  expect(diff.querySelector(".diff-row.added .diff-line-number:nth-child(2)")?.textContent).toBe(
     "20",
   );
   await waitFor(() =>
-    expect(diffText.querySelector('[data-syntax="keyword"]')?.textContent).toBe("return"),
+    expect(diff.querySelector(".diff-row.added .token.keyword")?.textContent).toBe("return"),
   );
-  expect(within(diff).getByRole("button", { name: "Copy diff" })).toBeTruthy();
+  expect(within(diff).getByRole("button", { name: "Copy" })).toBeTruthy();
+  fireEvent.click(fileChange);
+  expect(fileChange.getAttribute("aria-expanded")).toBe("false");
   expect(dialog.getByText("Check that cleared payments show their settlement state.")).toBeTruthy();
   fireEvent.click(dialog.getByRole("button", { name: "Return to workflow" }));
   expect(screen.queryByRole("dialog", { name: "Review plan" })).toBeNull();
@@ -666,11 +777,20 @@ it("opens each Build task in its own node and submits feedback for the chosen at
       },
     });
   renderApp(api);
-  fireEvent.click(await screen.findByRole("button", { name: "Inspect task 2: Add local storage" }));
+  const nextNode = await screen.findByRole("button", { name: "Inspect task 2: Add local storage" });
+  expect(nextNode.closest(".workflow-task")?.getAttribute("data-kind")).toBe("waiting");
+  fireEvent.click(nextNode);
   const panel = within(screen.getByRole("complementary", { name: "Workflow details" }));
+  expect(panel.getByRole("heading", { name: "2. Add local storage" })).toBeTruthy();
+  expect(panel.getByRole("status").textContent).toBe("Queued");
   expect(panel.getByText("Keep tasks after reload.")).toBeTruthy();
   expect(panel.queryByRole("button", { name: "Approve task" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Inspect task 1: Scaffold app" }));
+  const firstNode = screen.getByRole("button", { name: "Inspect task 1: Scaffold app" });
+  expect(firstNode.closest(".workflow-task")?.getAttribute("data-kind")).toBe("review");
+  fireEvent.click(firstNode);
+  expect(panel.getByRole("heading", { name: "1. Scaffold app" })).toBeTruthy();
+  expect(panel.getByRole("status").textContent).toBe("Needs review");
+  expect(panel.queryByText("Keep tasks after reload.")).toBeNull();
   fireEvent.click(panel.getByRole("button", { name: "Request changes" }));
   fireEvent.change(panel.getByRole("textbox", { name: "Requested changes" }), {
     target: { value: feedback },
@@ -693,6 +813,53 @@ it("opens each Build task in its own node and submits feedback for the chosen at
     commitSubject: "fix: add a visible task label",
   });
   expect(panel.getByText("1 of 2 tasks approved")).toBeTruthy();
+  expect(firstNode.closest(".workflow-task")?.getAttribute("data-kind")).toBe("saved");
+  expect(nextNode.closest(".workflow-task")?.getAttribute("data-kind")).toBe("review");
+});
+
+it("shows the selected Plan section when clicking the canvas and resets inspector scroll", async () => {
+  const api = fixtureApi([
+    {
+      ...saved,
+      plan: {
+        state: "ready",
+        text: "Full plan text.",
+        review: {
+          proposal: "Add settlement status to the payment view.",
+          findings: [],
+          considerations: ["Keep the existing permissions."],
+          steps: [],
+          files: [],
+          reproduction: [],
+          verification: [],
+        },
+      },
+    },
+  ]);
+  renderApp(api);
+  const plan = await screen.findByRole("button", { name: "Inspect Plan" });
+  const canvasNode = plan.closest(".workflow-node");
+  expect(canvasNode).toBeTruthy();
+  fireEvent.click(within(canvasNode as HTMLElement).getByText("Draft ready"));
+  const inspector = screen.getByRole("complementary", { name: "Workflow details" });
+  const panel = within(inspector);
+  expect(panel.getByText("Full plan text.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Expand Plan" }));
+  inspector.scrollTop = 120;
+  fireEvent.click(screen.getByRole("button", { name: "Scope" }));
+  expect(panel.getByRole("heading", { name: "Scope" })).toBeTruthy();
+  expect(panel.getByText("Add settlement status to the payment view.")).toBeTruthy();
+  expect(panel.queryByText("Full plan text.")).toBeNull();
+  expect(inspector.scrollTop).toBe(0);
+  fireEvent.click(screen.getByRole("button", { name: "Risks and assumptions" }));
+  expect(panel.getByText("Keep the existing permissions.")).toBeTruthy();
+  expect(panel.queryByText("Add settlement status to the payment view.")).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Hide details", expanded: true }));
+  expect(screen.queryByRole("complementary", { name: "Workflow details" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Scope" }));
+  fireEvent.click(screen.getByRole("button", { name: "Show details", expanded: false }));
+  expect(panel.getByRole("heading", { name: "Scope" })).toBeTruthy();
 });
 
 it("reopens saved history and keeps Build blocked while the plan is unavailable", async () => {
@@ -793,6 +960,44 @@ it("opens settings, saves the default provider, and verifies Jira access", async
   expect(screen.getByRole("radio", { name: "Claude Code" }).getAttribute("aria-checked")).toBe(
     "true",
   );
+});
+
+it("previews mascot changes and restores the saved mascot for a running task", async () => {
+  const task: WorkflowBuildTask = {
+    id: "1",
+    title: "Scaffold app",
+    detail: "Create the entry point.",
+    files: [],
+    state: "running",
+    attempt: 1,
+    revisions: [],
+  };
+  const api = fixtureApi([
+    { ...saved, build: { state: "running", approvedAt: saved.createdAt, tasks: [task] } },
+  ]);
+  const { unmount } = renderApp(api);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Mascot" }));
+  await chooseOption("Finish", "Matte");
+  await chooseOption("Movement", "Calm");
+  const preview = screen.getByRole("img", { name: "Mascot preview" });
+  expect(preview.dataset.surface).toBe("matte");
+  expect(preview.dataset.personality).toBe("calm");
+  unmount();
+
+  renderApp(api);
+  await screen.findByRole("button", { name: "Inspect Build" });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect Build" }));
+  const status = screen
+    .getByText("The provider is implementing this task.")
+    .closest('[role="status"]');
+  expect(status?.querySelector('[data-state="thinking"]')?.getAttribute("data-surface")).toBe(
+    "matte",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Mascot" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reset mascot" }));
+  expect(screen.getByRole("img", { name: "Mascot preview" }).dataset.surface).toBe("glossy");
 });
 
 it("preserves Jira headings, lists, formatting, and safe links in the issue preview", async () => {
