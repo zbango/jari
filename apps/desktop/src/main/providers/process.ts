@@ -12,9 +12,10 @@ export function spawnProvider(
   args: string[],
   cwd: string,
   signal: AbortSignal,
+  envOverrides?: NodeJS.ProcessEnv,
 ) {
   const { executable, options } = providerOptions(provider, cwd, signal);
-  const child = spawn(executable, args, options);
+  const child = spawn(executable, args, { ...options, env: { ...options.env, ...envOverrides } });
   child.stderr.resume();
   // The provider can exit before consuming stdin.
   child.stdin.on("error", () => {});

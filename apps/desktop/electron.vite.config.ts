@@ -25,6 +25,17 @@ export default defineConfig(({ command }) => {
         // The shared UI package and the rich-text editor must share the renderer's contexts.
         dedupe: ["@once-ui-system/core", "react", "react-dom"],
       },
+      optimizeDeps: {
+        // Keep Core's context singletons shared across component and effects imports in dev.
+        exclude: ["@once-ui-system/core", "@once-ui-system/fx"],
+        include: [
+          "prismjs",
+          "prismjs/components/prism-diff",
+          "prismjs/plugins/line-highlight/prism-line-highlight",
+          "prismjs/plugins/line-numbers/prism-line-numbers",
+          "prismjs/plugins/diff-highlight/prism-diff-highlight",
+        ],
+      },
       build: { minify: true },
       server: { host, port, strictPort: true, headers: { "Content-Security-Policy": csp } },
       plugins: [

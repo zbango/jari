@@ -144,3 +144,129 @@ it("loads Jira descriptions and comments plus same-site Confluence references", 
     },
   ]);
 });
+
+it("preserves Jira issue link directions and includes same-site issue references", async () => {
+  const blocks = { inward: "is blocked by", outward: "blocks" };
+  const calls: string[] = [];
+  const client = createAtlassianClient(threeVariables, async (input) => {
+    const url = new URL(String(input));
+    calls.push(url.pathname);
+    if (url.pathname.endsWith("/remotelink")) {
+      return Response.json([{ object: { url: "/browse/FIN-2" } }]);
+    }
+    if (url.pathname.endsWith("/comment")) {
+      return Response.json({ total: 0, comments: [] });
+    }
+    expect(url.searchParams.get("fields")?.split(",")).toContain("issuelinks");
+    return Response.json({
+      key: "FIN-1",
+      fields: {
+        summary: "Payment display",
+        issuelinks: [
+          {
+            type: blocks,
+            inwardIssue: {
+              key: "FIN-2",
+              fields: {
+                summary: "Update ledger",
+                status: { name: "Open", statusCategory: { key: "new" } },
+              },
+            },
+          },
+          { type: blocks, outwardIssue: { key: "FIN-3" } },
+        ],
+        description: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "inlineCard",
+                  attrs: { url: "https://example.atlassian.net/browse/FIN-4" },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+  });
+  const result = await client.issue("FIN-1");
+  expect(result.linkedIssues).toEqual([
+    {
+      key: "FIN-2",
+      relationship: "is blocked by",
+      title: "Update ledger",
+      status: "Open",
+      statusCategory: "new",
+      isBlocker: true,
+    },
+    { key: "FIN-3", relationship: "blocks" },
+    { key: "FIN-4", relationship: "References" },
+  ]);
+  expect(result.references).toEqual([]);
+  expect(calls).toHaveLength(3);
+});
+
+it("verifies inbound blockers before planning and permits downstream and completed links", async () => {
+  let category: string | undefined = "indeterminate";
+  const client = createAtlassianClient(threeVariables, async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/FIN-2")) {
+      expect(url.searchParams.get("fields")).toBe("status");
+      if (!category) return new Response(null, { status: 404 });
+      return Response.json({
+        key: "FIN-2",
+        fields: {
+          status: {
+            name: category === "done" ? "Shipped" : "Working",
+            statusCategory: { key: category },
+          },
+        },
+      });
+    }
+    expect(url.pathname).toBe("/rest/api/3/issue/FIN-1");
+    expect(url.searchParams.get("fields")).toBe("issuelinks");
+    return Response.json({
+      key: "FIN-1",
+      fields: {
+        issuelinks: [
+          {
+            type: { name: "Blocks", inward: "is blocked by", outward: "blocks" },
+            inwardIssue: { key: "FIN-2" },
+          },
+          {
+            type: { name: "Blocks", inward: "is blocked by", outward: "blocks" },
+            outwardIssue: {
+              key: "FIN-3",
+              fields: { status: { name: "Open", statusCategory: { key: "new" } } },
+            },
+          },
+        ],
+      },
+    });
+  });
+  const source = {
+    key: "FIN-1",
+    title: "Show settlements",
+    status: "Open",
+    url: "https://example.atlassian.net/browse/FIN-1",
+    description: "Original Jira snapshot.",
+    comments: [],
+    references: [],
+  };
+  await expect(client.verifyPlanningIssue(source)).rejects.toThrow(
+    /Planning is blocked by FIN-2 \(Working\)/,
+  );
+  category = undefined;
+  await expect(client.verifyPlanningIssue(source)).rejects.toThrow(/FIN-2 \(status unverified\)/);
+  category = "done";
+  await expect(client.verifyPlanningIssue(source)).resolves.toMatchObject({
+    description: source.description,
+    linkedIssues: [
+      { key: "FIN-2", status: "Shipped", statusCategory: "done", isBlocker: true },
+      { key: "FIN-3", status: "Open", relationship: "blocks" },
+    ],
+  });
+});

@@ -16,6 +16,15 @@ it("passes the Jira issue, attached knowledge, and clarification replies to plan
       status: "Open",
       comments: [],
       references: [],
+      linkedIssues: [
+        {
+          key: "FIN-2",
+          relationship: "is blocked by",
+          status: "Shipped",
+          statusCategory: "done",
+          isBlocker: true,
+        },
+      ],
     },
     "/workspace",
     new AbortController().signal,
@@ -38,6 +47,8 @@ it("passes the Jira issue, attached knowledge, and clarification replies to plan
   expect(request?.prompt).toContain("Add the settlement status.");
   expect(request?.prompt).toContain("Settlements close at the end of the accounting period.");
   expect(request?.prompt).toContain("src/finance/ledger.ts");
+  expect(request?.prompt).toContain("Jira linked issues");
+  expect(request?.prompt).toContain("FIN-2");
   expect(request?.prompt).toContain("The primary ledger.");
   expect(request?.prompt).toContain("Should closed periods appear?");
   expect(request?.prompt).toContain("Show only open periods.");

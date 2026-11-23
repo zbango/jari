@@ -6,6 +6,7 @@ import { Column } from "@once-ui-system/core/components/Column";
 import { Feedback } from "@once-ui-system/core/components/Feedback";
 import { Grid } from "@once-ui-system/core/components/Grid";
 import { Heading } from "@once-ui-system/core/components/Heading";
+import { IconButton } from "@once-ui-system/core/components/IconButton";
 import { Logo } from "@once-ui-system/core/components/Logo";
 import { Row } from "@once-ui-system/core/components/Row";
 import { Skeleton } from "@once-ui-system/core/components/Skeleton";
@@ -31,7 +32,11 @@ export function KnowledgePage({
   onSave: (...args: Parameters<KnowledgeApi["save"]>) => Promise<void>;
   onRemove: KnowledgeApi["remove"];
 }) {
-  const [dialog, setDialog] = useState<{ note: KnowledgeNote | null; area: string }>();
+  const [dialog, setDialog] = useState<{
+    note: KnowledgeNote | null;
+    area: string;
+    deleteOnly?: boolean;
+  }>();
   const groups = groupKnowledgeNotes(notes ?? []);
 
   return (
@@ -117,38 +122,53 @@ export function KnowledgePage({
                 </Row>
                 <Grid columns={3} m={{ columns: 2 }} s={{ columns: 1 }} gap="16">
                   {areaNotes.map((note) => (
-                    <Card
-                      key={note.id}
-                      fillWidth
-                      padding="20"
-                      radius="l"
-                      background="surface"
-                      border
-                      onClick={() => setDialog({ note, area })}
-                    >
-                      <Column gap="8" minWidth="0">
-                        <Text textVariant="label-strong-m" className="request-body">
-                          {note.title}
-                        </Text>
-                        {note.bodyText && (
-                          <Text
-                            textVariant="body-default-s"
-                            onBackground="neutral-weak"
-                            className="request-body"
-                          >
-                            {note.bodyText.length > 160
-                              ? `${note.bodyText.slice(0, 160).trimEnd()}…`
-                              : note.bodyText}
+                    <Column key={note.id} position="relative">
+                      <Card
+                        fillWidth
+                        fillHeight
+                        padding="20"
+                        paddingRight="56"
+                        radius="l"
+                        background="surface"
+                        border
+                        onClick={() => setDialog({ note, area })}
+                      >
+                        <Column gap="8" minWidth="0">
+                          <Text textVariant="label-strong-m" className="request-body">
+                            {note.title}
                           </Text>
-                        )}
-                        {!!note.paths.length && (
-                          <Text textVariant="label-default-s" onBackground="neutral-weak">
-                            {note.paths.length}{" "}
-                            {note.paths.length === 1 ? "file path" : "file paths"}
-                          </Text>
-                        )}
-                      </Column>
-                    </Card>
+                          {note.bodyText && (
+                            <Text
+                              textVariant="body-default-s"
+                              onBackground="neutral-weak"
+                              className="request-body"
+                            >
+                              {note.bodyText.length > 160
+                                ? `${note.bodyText.slice(0, 160).trimEnd()}…`
+                                : note.bodyText}
+                            </Text>
+                          )}
+                          {!!note.paths.length && (
+                            <Text textVariant="label-default-s" onBackground="neutral-weak">
+                              {note.paths.length}{" "}
+                              {note.paths.length === 1 ? "file path" : "file paths"}
+                            </Text>
+                          )}
+                        </Column>
+                      </Card>
+                      <Row position="absolute" top="12" right="12">
+                        <IconButton
+                          type="button"
+                          icon="trash"
+                          variant="tertiary"
+                          tone="danger"
+                          size="s"
+                          tooltip="Delete note"
+                          aria-label={`Delete note: ${note.title}`}
+                          onClick={() => setDialog({ note, area, deleteOnly: true })}
+                        />
+                      </Row>
+                    </Column>
                   ))}
                 </Grid>
               </Column>

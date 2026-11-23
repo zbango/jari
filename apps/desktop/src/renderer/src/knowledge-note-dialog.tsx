@@ -13,17 +13,19 @@ import { Textarea } from "@once-ui-system/core/components/Textarea";
 import { RichTextEditor } from "@once-ui-system/core/richtext";
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { workflowError } from "./workflow/workflow-form";
+import { workflowError } from "./workflow/workflow-error";
 
 export function KnowledgeNoteDialog({
   note,
   area,
+  deleteOnly = false,
   onClose,
   onSave,
   onRemove,
 }: {
   note: KnowledgeNote | null;
   area: string;
+  deleteOnly?: boolean;
   onClose(): void;
   onSave(id: string | null, input: KnowledgeNoteInput): Promise<void>;
   onRemove(id: string): Promise<void>;
@@ -87,6 +89,33 @@ export function KnowledgeNoteDialog({
     } finally {
       setPending(false);
     }
+  }
+
+  if (deleteOnly && note) {
+    return (
+      <Dialog
+        open
+        title="Delete knowledge note?"
+        description={`“${note.title}” will be permanently deleted.`}
+        closeOnClickaway={false}
+        showClose={!pending}
+        onClose={() => {
+          if (!pending) onClose();
+        }}
+        footer={
+          <>
+            <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="button" tone="danger" loading={pending} onClick={() => void remove()}>
+              Permanently delete
+            </Button>
+          </>
+        }
+      >
+        {error && <Feedback tone="danger" description={error} />}
+      </Dialog>
+    );
   }
 
   return (

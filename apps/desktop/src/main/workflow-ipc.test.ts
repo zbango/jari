@@ -1,0 +1,344 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { workflowChannels } from "@agent-desktop/shared";
+import type { WorkflowRecord } from "@agent-desktop/shared";
+import { expect, it, vi } from "vitest";
+import { createAtlassianClient } from "./atlassian";
+import { openCursor } from "./cursor";
+import { generatePlanReview, runBuild, runPlanning } from "./planner";
+import { registerWorkflowHandlers } from "./workflow-ipc";
+import { openWorkflowStore } from "./workflow-store";
+
+const { handles, getPath, showOpenDialog, showSaveDialog, once } = vi.hoisted(() => ({
+  handles: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
+  getPath: vi.fn(),
+  showOpenDialog: vi.fn(),
+  showSaveDialog: vi.fn(),
+  once: vi.fn(),
+}));
+
+vi.mock("electron", () => ({
+  app: { getPath, once },
+  dialog: { showOpenDialog, showSaveDialog },
+  ipcMain: {
+    handle: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) =>
+      handles.set(channel, handler),
+  },
+  shell: {},
+}));
+vi.mock("./atlassian", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./atlassian")>()),
+  createAtlassianClient: vi.fn(),
+}));
+vi.mock("./planner", () => ({
+  runPlanning: vi.fn(),
+  getPlanningOptions: vi.fn(),
+  generatePlanReview: vi.fn(),
+  runBuild: vi.fn(),
+}));
+vi.mock("./cursor", () => ({ openCursor: vi.fn().mockResolvedValue(undefined) }));
+
+it("runs and revises one approved Build task at a time", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "jari-simulate-issue-"));
+  const workspace = join(directory, "workspace");
+  mkdirSync(workspace);
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: workspace, encoding: "utf8" }).trim();
+  git("init", "-q");
+  git("config", "user.email", "jari-test@example.com");
+  git("config", "user.name", "Jari Test");
+  git("config", "commit.gpgsign", "false");
+  getPath.mockReturnValue(directory);
+  showOpenDialog.mockResolvedValue({ filePaths: [workspace], canceled: false });
+  vi.mocked(runPlanning)
+    .mockResolvedValueOnce({ state: "needs-input", text: "What should we scaffold?" })
+    .mockResolvedValueOnce({ state: "ready", text: "Scaffold Pocket Tasks." });
+  const review = {
+    proposal: "Scaffold a small tracker.",
+    findings: ["The workspace is empty."],
+    considerations: [],
+    steps: [
+      { title: "Add the entry point", detail: "Add the task view.", files: ["src/main.ts"] },
+      { title: "Persist tasks", detail: "Store tasks locally.", files: ["src/storage.ts"] },
+    ],
+    files: [],
+    reproduction: [],
+    verification: ["Open the tracker."],
+  };
+  vi.mocked(generatePlanReview).mockResolvedValue(review);
+  vi.mocked(runBuild).mockImplementation(
+    async (_provider, _issue, _cwd, _plan, task, tasks, _signal, transcript) => {
+      const result =
+        task.id === "2"
+          ? "Implemented local storage."
+          : task.attempt === 1
+            ? "Implemented the task view."
+            : "Added an accessible label.";
+      transcript?.("user", JSON.stringify(tasks.map(({ id, state }) => ({ id, state }))));
+      transcript?.("assistant", `  ${result}\n\n`);
+      mkdirSync(join(workspace, "src"), { recursive: true });
+      writeFileSync(join(workspace, task.id === "1" ? "src/main.ts" : "src/storage.ts"), result);
+      return result;
+    },
+  );
+  const sender = { mainFrame: {} };
+  const event = { sender, senderFrame: sender.mainFrame };
+  registerWorkflowHandlers(
+    () =>
+      ({ webContents: sender }) as unknown as ReturnType<
+        Parameters<typeof registerWorkflowHandlers>[0]
+      >,
+  );
+  const invoke = async (channel: string, ...args: unknown[]) =>
+    await handles.get(channel)?.(event, ...args);
+  const list = async () => (await invoke(workflowChannels.list)) as WorkflowRecord[];
+  try {
+    const workspacePath = await invoke(workflowChannels.chooseWorkspace);
+    const fixture = { title: "Pocket Tasks", description: "Create a local task tracker." };
+    const record = (await invoke(workflowChannels.create, {
+      simulatedIssue: fixture,
+      provider: "codex",
+      workspacePath,
+    })) as WorkflowRecord;
+    expect(record.source).toMatchObject({ ...fixture, kind: "simulated", linkedIssues: [] });
+    expect(record.source?.url).toBeUndefined();
+    await expect(
+      invoke(workflowChannels.openWorkspaceInCursor, record.id),
+    ).resolves.toBeUndefined();
+    expect(openCursor).toHaveBeenCalledExactlyOnceWith(workspacePath);
+    await expect(invoke(workflowChannels.openWorkspaceInCursor, "/arbitrary/path")).rejects.toThrow(
+      /saved workflow/,
+    );
+    await vi.waitFor(async () => expect((await list())[0]?.plan?.state).toBe("needs-input"));
+    await invoke(workflowChannels.answerPlan, record.id, "Use vanilla TypeScript.");
+    await vi.waitFor(async () =>
+      expect((await list())[0]?.plan).toMatchObject({
+        state: "ready",
+        text: "Scaffold Pocket Tasks.",
+        review,
+      }),
+    );
+    expect(runPlanning).toHaveBeenLastCalledWith(
+      "codex",
+      record.source,
+      workspacePath,
+      expect.any(AbortSignal),
+      undefined,
+      [{ questions: "What should we scaffold?", answer: "Use vanilla TypeScript." }],
+      undefined,
+      expect.any(Function),
+      undefined,
+    );
+    expect(generatePlanReview).toHaveBeenCalledOnce();
+    await expect(invoke(workflowChannels.startBuild, record.id)).rejects.toThrow(/Approve/);
+    expect(runBuild).not.toHaveBeenCalled();
+    await expect(invoke(workflowChannels.approvePlan, record.id)).resolves.toMatchObject({
+      build: {
+        state: "ready",
+        tasks: [
+          { id: "1", state: "queued" },
+          { id: "2", state: "queued" },
+        ],
+      },
+    });
+    expect(runBuild).not.toHaveBeenCalled();
+    await expect(invoke(workflowChannels.startBuild, record.id)).resolves.toMatchObject({
+      build: { state: "running", tasks: [{ state: "running" }, { state: "queued" }] },
+    });
+    const waitForReview = (tasks: object[]) =>
+      vi.waitFor(async () =>
+        expect((await list())[0]?.build).toMatchObject({ state: "review", tasks }),
+      );
+    await waitForReview([{ state: "review", attempt: 1 }, { state: "queued" }]);
+    expect(git("diff", "--cached", "--name-only")).toBe("");
+    expect(runBuild).toHaveBeenCalledExactlyOnceWith(
+      "codex",
+      record.source,
+      workspacePath,
+      expect.objectContaining({ state: "ready", text: "Scaffold Pocket Tasks.", review }),
+      expect.objectContaining({ id: "1", attempt: 1 }),
+      [
+        expect.objectContaining({ id: "1", state: "running" }),
+        expect.objectContaining({ id: "2", state: "queued" }),
+      ],
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+    await expect(invoke(workflowChannels.startBuild, record.id)).rejects.toThrow(/Review/);
+    await expect(
+      invoke(workflowChannels.reviewBuildTask, record.id, { taskId: "2", attempt: 1 }),
+    ).rejects.toThrow(/latest result/);
+
+    const feedback = "Give the task input an accessible label.";
+    await invoke(workflowChannels.reviewBuildTask, record.id, {
+      taskId: "1",
+      attempt: 1,
+      feedback,
+    });
+    await waitForReview([
+      {
+        state: "review",
+        attempt: 2,
+        revisions: [{ feedback, summary: "Implemented the task view." }],
+      },
+      { state: "queued" },
+    ]);
+    expect(runBuild).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runBuild).mock.lastCall?.[4]).toMatchObject({
+      id: "1",
+      attempt: 2,
+      revisions: [{ feedback }],
+    });
+    await expect(
+      invoke(workflowChannels.reviewBuildTask, record.id, { taskId: "1", attempt: 1 }),
+    ).rejects.toThrow(/latest result/);
+
+    writeFileSync(join(workspace, "unrelated.txt"), "Created after review.");
+    await expect(
+      invoke(workflowChannels.reviewBuildTask, record.id, {
+        taskId: "1",
+        attempt: 2,
+      }),
+    ).rejects.toThrow(/differ from the reviewed snapshot/);
+    expect(runBuild).toHaveBeenCalledTimes(2);
+    rmSync(join(workspace, "unrelated.txt"));
+    await expect(
+      invoke(workflowChannels.reviewBuildTask, record.id, {
+        taskId: "1",
+        attempt: 2,
+        commitSubject: "wrong prefix",
+      }),
+    ).rejects.toThrow(/Conventional Commit/);
+    git("config", "commit.gpgsign", "true");
+    git("config", "gpg.format", "openpgp");
+    git("config", "gpg.program", "jari-test-missing-signing-program");
+    await expect(
+      invoke(workflowChannels.reviewBuildTask, record.id, { taskId: "1", attempt: 2 }),
+    ).rejects.toThrow(/sign/i);
+    expect((await list())[0]?.build?.state).toBe("review");
+    expect(runBuild).toHaveBeenCalledTimes(2);
+    expect(git("diff", "--cached", "--name-only")).toBe("");
+    git("config", "commit.gpgsign", "false");
+    await invoke(workflowChannels.reviewBuildTask, record.id, {
+      taskId: "1",
+      attempt: 2,
+      commitSubject: "fix: add an accessible task label",
+    });
+    await waitForReview([
+      { state: "approved", attempt: 2 },
+      { state: "review", attempt: 1 },
+    ]);
+    expect(vi.mocked(runBuild).mock.lastCall?.[4]).toMatchObject({ id: "2" });
+    expect(vi.mocked(runBuild).mock.lastCall?.[5]).toEqual([
+      expect.objectContaining({ id: "1", state: "approved" }),
+      expect.objectContaining({ id: "2", state: "running" }),
+    ]);
+    await invoke(workflowChannels.reviewBuildTask, record.id, { taskId: "2", attempt: 1 });
+    expect(git("log", "--format=%s")).toBe(
+      "feat: Persist tasks\nfix: add an accessible task label",
+    );
+    expect(git("diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "HEAD^")).toBe(
+      "src/main.ts",
+    );
+    expect(git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")).toBe("src/storage.ts");
+    expect(git("status", "--porcelain")).toBe("");
+    expect((await list())[0]?.build).toMatchObject({
+      state: "completed",
+      tasks: [
+        {
+          state: "approved",
+          summary: "Added an accessible label.",
+          git: { commit: { subject: "fix: add an accessible task label" } },
+        },
+        { state: "approved", summary: "Implemented local storage." },
+      ],
+    });
+    expect(createAtlassianClient).not.toHaveBeenCalled();
+    const filePath = join(directory, "provider-transcript.txt");
+    showSaveDialog.mockResolvedValueOnce({ canceled: true });
+    await expect(invoke(workflowChannels.exportTranscript, record.id)).resolves.toBe(false);
+    showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath });
+    await expect(invoke(workflowChannels.exportTranscript, record.id)).resolves.toBe(true);
+    const exported = readFileSync(filePath, "utf8");
+    expect(exported).toContain("Build · Task 1 · Attempt 1");
+    expect(exported).toContain("Build · Task 1 · Attempt 2");
+    expect(exported).toContain("Build · Task 2 · Attempt 1");
+    expect(exported).toContain('\n[{"id":"1","state":"approved"},{"id":"2","state":"running"}]');
+    expect(exported).toContain("\n  Added an accessible label.\n\n");
+
+    const reopened = openWorkflowStore(join(directory, "workflows.sqlite"));
+    try {
+      expect(reopened.transcript(record.id)).toHaveLength(6);
+      const append = reopened.transcriptWriter(record.id, {
+        phase: "Build",
+        taskId: "2",
+        attempt: 1,
+      });
+      for (let index = 0; index < 50; index++) append("assistant", `Message ${index}`);
+      const firstPage = await invoke(workflowChannels.readTranscript, record.id, 0);
+      expect(firstPage).toMatchObject({ hasMore: true });
+      const entries = (firstPage as { entries: { sequence: number; text: string }[] }).entries;
+      expect(entries).toHaveLength(50);
+      expect(entries[49]?.text).toBe("Message 43");
+      await expect(
+        invoke(workflowChannels.readTranscript, record.id, entries[49]?.sequence),
+      ).resolves.toMatchObject({
+        hasMore: false,
+        entries: Array.from({ length: 6 }, (_, index) => ({ text: `Message ${44 + index}` })),
+      });
+      await expect(invoke(workflowChannels.readTranscript, "another-workflow", 0)).resolves.toEqual(
+        {
+          entries: [],
+          hasMore: false,
+        },
+      );
+      await expect(invoke(workflowChannels.readTranscript, record.id, -1)).rejects.toThrow(/valid/);
+      vi.mocked(runPlanning).mockResolvedValue({ state: "ready", text: "A new plan.", review });
+      const revised = (await invoke(workflowChannels.replayPlan, record.id, {
+        mode: "revise",
+        feedback: "Keep the existing storage.",
+      })) as WorkflowRecord;
+      expect(revised).toMatchObject({
+        provider: "codex",
+        workspacePath,
+        plan: {
+          revision: {
+            previousPlan: "Scaffold Pocket Tasks.",
+            feedback: "Keep the existing storage.",
+          },
+          clarifications: [{ answer: "Use vanilla TypeScript." }],
+        },
+      });
+      expect(revised.id).not.toBe(record.id);
+      expect(revised.build).toBeUndefined();
+      expect(vi.mocked(runPlanning).mock.lastCall?.[8]).toEqual(revised.plan?.revision);
+      const fresh = (await invoke(workflowChannels.replayPlan, record.id, {
+        mode: "fresh",
+        provider: "claude",
+        customPlan: { model: "sonnet", effort: "high", skillIds: [] },
+      })) as WorkflowRecord;
+      expect(fresh).toMatchObject({
+        provider: "claude",
+        workspacePath,
+        plan: { custom: { model: "sonnet", effort: "high" } },
+      });
+      expect(fresh.plan?.clarifications).toBeUndefined();
+      expect(vi.mocked(runPlanning).mock.lastCall?.[8]).toBeUndefined();
+      await vi.waitFor(async () => {
+        const records = await list();
+        expect(records.find(({ id }) => id === fresh.id)?.plan?.state).toBe("ready");
+        expect(records.find(({ id }) => id === revised.id)?.plan?.state).toBe("ready");
+        expect(records.find(({ id }) => id === record.id)?.build?.state).toBe("completed");
+      });
+      await invoke(workflowChannels.removeWorkflow, record.id);
+      expect(reopened.transcript(record.id)).toEqual([]);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    once.mock.calls.find(([event]) => event === "will-quit")?.[1]();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

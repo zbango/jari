@@ -4,6 +4,11 @@
 @import "@fontsource-variable/geist-mono";
 @source ".";
 
+/* Once UI portals its dropdowns to the document below the sheet's stacking level. */
+body:has(.workflow-intake-sheet) > * .dropdown-portal {
+  z-index: 11;
+}
+
 .workflow-app {
   --workspace-bg: var(--page-background);
   --surface: var(--surface-background);
@@ -94,6 +99,7 @@
 .history-item {
   display: grid;
   width: 100%;
+  min-width: 0;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 0.6rem;
   align-items: center;
@@ -136,6 +142,12 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+}
+
+.workflow-empty {
+  grid-column: 2 / -1;
+  min-width: 0;
+  min-height: 0;
 }
 
 .workspace-header {
@@ -332,6 +344,12 @@
   color: var(--accent);
 }
 
+.workflow-task-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workflow-canvas .react-flow__handle {
   width: 5px;
   height: 5px;
@@ -408,10 +426,7 @@
 }
 
 .inspector-field h3,
-.inspector-field dt,
-.workflow-form > label,
-.workflow-form legend,
-.field-label {
+.inspector-field dt {
   font-size: 0.81rem;
   font-weight: 620;
 }
@@ -425,62 +440,6 @@
   overflow-wrap: anywhere;
 }
 
-.workflow-form {
-  display: grid;
-  gap: 0.65rem;
-  margin-top: 1.2rem;
-}
-
-.workflow-form fieldset,
-.workspace-field {
-  margin-block: 0.45rem;
-}
-
-.workflow-form select {
-  width: 100%;
-  padding: 0.63rem 0.7rem;
-  border: 1px solid var(--line);
-  border-radius: 0.48rem;
-  background: var(--workspace-bg);
-  color: var(--text);
-}
-
-.provider-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
-}
-
-.provider-option {
-  display: flex;
-  align-items: center;
-  gap: 0.38rem;
-  padding: 0.42rem 0.52rem;
-  border: 1px solid var(--line);
-  border-radius: 0.4rem;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.provider-option:has(:checked) {
-  background: var(--surface-selected);
-  border-color: var(--accent);
-}
-
-.provider-option input {
-  accent-color: var(--accent);
-}
-
-.workspace-field {
-  display: grid;
-  gap: 0.45rem;
-}
-
-.workspace-field button {
-  justify-self: start;
-}
-
 .workspace-path {
   color: var(--text-secondary);
   font-size: 0.79rem;
@@ -490,10 +449,6 @@
 .form-error {
   color: var(--error);
   font-size: 0.83rem;
-}
-
-.workflow-form .workflow-primary {
-  width: 100%;
 }
 
 .workflow-app :is(button, input, select, summary):focus-visible {
@@ -516,10 +471,6 @@
     grid-column: 2;
     border-top: 1px solid var(--line);
     border-left: 0;
-  }
-
-  .workflow-form {
-    max-width: 36rem;
   }
 }
 

@@ -1,7 +1,9 @@
+import { openWorkItemBlockers } from "@agent-desktop/shared";
 import type {
   AtlassianDocumentNode,
   WorkBoard,
   WorkItem,
+  WorkItemLink,
   WorkItemSummary,
   WorkSprint,
 } from "@agent-desktop/shared";
@@ -11,9 +13,20 @@ type JiraIssue = {
   key: string;
   fields: {
     summary: string;
-    status?: { name: string };
+    status?: JiraStatus;
     description?: AtlassianDocumentNode | null;
+    issuelinks?: JiraIssueLink[];
   };
+};
+type JiraStatus = { name: string; statusCategory?: { key?: string } };
+type JiraLinkedIssue = {
+  key: string;
+  fields?: { summary?: string; status?: JiraStatus };
+};
+type JiraIssueLink = {
+  type: { name?: string; inward: string; outward: string };
+  inwardIssue?: JiraLinkedIssue;
+  outwardIssue?: JiraLinkedIssue;
 };
 type JiraComment = { author?: { displayName?: string }; body: AtlassianDocumentNode };
 type JiraRemoteLink = { object?: { title?: string; url?: string } };
@@ -40,8 +53,12 @@ function readDocument(document: AtlassianDocumentNode | null | undefined): {
   return { text: document ? visit(document).trim() : "", links: [...links] };
 }
 
+function isIssueKey(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 80 && /^[A-Z][A-Z0-9_]*-[0-9]+$/.test(value);
+}
+
 export function issueKey(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Z][A-Z0-9_]*-[0-9]+$/.test(value) || value.length > 80) {
+  if (!isIssueKey(value)) {
     throw new Error("Select a valid Jira issue.");
   }
   return value;
@@ -170,6 +187,52 @@ export function createAtlassianClient(env?: NodeJS.ProcessEnv, transport = fetch
     return issues;
   }
 
+  async function issueRelationships(
+    key: string,
+    relations: JiraIssueLink[],
+  ): Promise<WorkItemLink[]> {
+    const links: WorkItemLink[] = [];
+    for (const { type, inwardIssue, outwardIssue } of relations) {
+      const blockerType =
+        type.name?.trim().toLowerCase() === "blocks" ||
+        type.outward.trim().toLowerCase() === "blocks" ||
+        type.inward.trim().toLowerCase() === "is blocked by";
+      for (const [linked, relationship, isBlocker] of [
+        [inwardIssue, type.inward, blockerType],
+        [outwardIssue, type.outward, false],
+      ] as const) {
+        if (!linked || !isIssueKey(linked.key) || linked.key === key) continue;
+        const status = linked.fields?.status;
+        links.push({
+          key: linked.key,
+          relationship,
+          ...(linked.fields?.summary ? { title: linked.fields.summary } : {}),
+          ...(status?.name ? { status: status.name } : {}),
+          ...(status?.statusCategory?.key ? { statusCategory: status.statusCategory.key } : {}),
+          ...(isBlocker ? { isBlocker: true } : {}),
+        });
+      }
+    }
+    const unknownKeys = new Set(
+      links.filter((link) => link.isBlocker && !link.statusCategory).map(({ key }) => key),
+    );
+    const statuses = await Promise.all(
+      [...unknownKeys].map(async (key) => {
+        const issue = await get<JiraLinkedIssue>("jira", `/rest/api/3/issue/${key}`, {
+          fields: "status",
+        }).catch(() => undefined);
+        return [key, issue?.fields?.status] as const;
+      }),
+    );
+    const statusByKey = new Map(statuses);
+    return links.map((link) => {
+      const status = statusByKey.get(link.key);
+      return status?.statusCategory?.key
+        ? { ...link, status: status.name, statusCategory: status.statusCategory.key }
+        : link;
+    });
+  }
+
   return {
     assignedSprintIssues(): Promise<WorkItemSummary[]> {
       return searchIssues("/rest/api/3/search/jql", {
@@ -193,10 +256,42 @@ export function createAtlassianClient(env?: NodeJS.ProcessEnv, transport = fetch
         `/rest/software/1.0/board/${jiraId(boardId)}/sprint/${jiraId(sprintId)}/issue`,
       );
     },
+    async verifyPlanningIssue(source: WorkItem): Promise<WorkItem> {
+      let linkedIssues: WorkItemLink[];
+      try {
+        const item = await get<JiraIssue>("jira", `/rest/api/3/issue/${issueKey(source.key)}`, {
+          fields: "issuelinks",
+        });
+        if (!Array.isArray(item.fields.issuelinks)) throw new Error("Jira omitted issue links.");
+        linkedIssues = await issueRelationships(item.key, item.fields.issuelinks);
+      } catch {
+        throw new Error(
+          "Jira dependencies could not be checked. Check Jira access and try again before planning.",
+        );
+      }
+      const blockers = openWorkItemBlockers(linkedIssues);
+      if (blockers.length) {
+        const detail = blockers
+          .map(
+            ({ key, status, statusCategory }) =>
+              `${key} (${statusCategory ? (status ?? statusCategory) : "status unverified"})`,
+          )
+          .join(", ");
+        throw new Error(
+          `Planning is blocked by ${detail}. Check Jira and try again once the blockers are Done.`,
+        );
+      }
+      const linkedKeys = new Set(linkedIssues.map(({ key }) => key));
+      const mentions =
+        source.linkedIssues?.filter(
+          ({ key, relationship }) => relationship === "References" && !linkedKeys.has(key),
+        ) ?? [];
+      return { ...source, linkedIssues: [...linkedIssues, ...mentions] };
+    },
     async issue(key: string): Promise<WorkItem> {
       const path = `/rest/api/3/issue/${issueKey(key)}`;
       const [item, remoteLinks] = await Promise.all([
-        get<JiraIssue>("jira", path, { fields: "summary,description,status" }),
+        get<JiraIssue>("jira", path, { fields: "summary,description,status,issuelinks" }),
         get<JiraRemoteLink[]>("jira", `${path}/remotelink`).catch(() => []),
       ]);
       const descriptionDocument = item.fields.description ?? undefined;
@@ -223,14 +318,27 @@ export function createAtlassianClient(env?: NodeJS.ProcessEnv, transport = fetch
         if (!page.comments.length || comments.length >= page.total) break;
       }
       const references: WorkItem["references"] = [];
+      const linkedIssues = await issueRelationships(item.key, item.fields.issuelinks ?? []);
+      const linkedKeys = new Set(linkedIssues.map(({ key }) => key));
       const urls = new Map(links.map((url) => [url, url]));
       for (const { object } of remoteLinks) {
         if (object?.url) urls.set(object.url, object.title ?? object.url);
       }
       for (const [url, title] of urls) {
+        const parsed = url.startsWith("/") ? URL.parse(url, siteOrigin) : URL.parse(url);
+        if (!parsed || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) continue;
+        const mentioned =
+          parsed.origin === siteOrigin
+            ? /^\/browse\/([^/]+)\/?$/.exec(parsed.pathname)?.[1]
+            : undefined;
+        if (isIssueKey(mentioned) && mentioned !== item.key) {
+          if (!linkedKeys.has(mentioned)) {
+            linkedIssues.push({ key: mentioned, relationship: "References" });
+            linkedKeys.add(mentioned);
+          }
+          continue;
+        }
         if (!URL.canParse(url)) continue;
-        const parsed = new URL(url);
-        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") continue;
         const id =
           parsed.origin === siteOrigin
             ? (/\/wiki\/(?:spaces\/[^/]+\/pages\/|pages\/)([0-9]+)(?:\/|$)/.exec(
@@ -267,6 +375,7 @@ export function createAtlassianClient(env?: NodeJS.ProcessEnv, transport = fetch
         ...(descriptionDocument ? { descriptionDocument } : {}),
         comments,
         references,
+        linkedIssues,
       };
     },
   };

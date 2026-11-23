@@ -1,4 +1,4 @@
-import type { WorkflowPlan } from "@agent-desktop/shared";
+import type { BuildTaskState, WorkflowBuild, WorkflowPlan } from "@agent-desktop/shared";
 
 export const stages = {
   idea: {
@@ -38,10 +38,24 @@ export const stages = {
 } as const;
 
 export type Stage = keyof typeof stages;
-export type Selection = { stage: Stage; section?: string };
+export type Selection = { stage: Stage; section?: string; taskId?: string };
 export const stageOrder: Stage[] = ["idea", "plan", "build"];
 
-export function stageStatus(stage: Stage, hasWorkflow: boolean, plan?: WorkflowPlan) {
+export const buildTaskStatus = {
+  queued: { label: "Queued", kind: "waiting", icon: "time" },
+  running: { label: "Building", kind: "running", icon: "time" },
+  review: { label: "Needs review", kind: "waiting", icon: "message" },
+  approved: { label: "Approved", kind: "saved", icon: "checkCircle" },
+  failed: { label: "Failed", kind: "blocked", icon: "warning" },
+  interrupted: { label: "Interrupted", kind: "blocked", icon: "pause" },
+} as const satisfies Record<BuildTaskState, { label: string; kind: string; icon: string }>;
+
+export function stageStatus(
+  stage: Stage,
+  hasWorkflow: boolean,
+  plan?: WorkflowPlan,
+  build?: WorkflowBuild,
+) {
   switch (stage) {
     case "idea":
       return hasWorkflow
@@ -52,7 +66,13 @@ export function stageStatus(stage: Stage, hasWorkflow: boolean, plan?: WorkflowP
         case "running":
           return { label: "Planning", kind: "running", icon: "time" as const };
         case "ready":
-          return { label: "Draft ready", kind: "saved", icon: "checkCircle" as const };
+          return plan.reviewAttempt?.state === "running"
+            ? { label: "Preparing review", kind: "running", icon: "time" as const }
+            : {
+                label: build ? "Approved" : "Draft ready",
+                kind: "saved",
+                icon: "checkCircle" as const,
+              };
         case "needs-input":
           return { label: "Needs input", kind: "waiting", icon: "message" as const };
         case "failed":
@@ -63,6 +83,21 @@ export function stageStatus(stage: Stage, hasWorkflow: boolean, plan?: WorkflowP
           return { label: "Pending", kind: "waiting", icon: "time" as const };
       }
     case "build":
-      return { label: "Blocked", kind: "blocked", icon: "lock" as const };
+      switch (build?.state) {
+        case "ready":
+          return { label: "Ready", kind: "waiting", icon: "time" as const };
+        case "running":
+          return { label: "Building", kind: "running", icon: "time" as const };
+        case "review":
+          return buildTaskStatus.review;
+        case "completed":
+          return { label: "Completed", kind: "saved", icon: "checkCircle" as const };
+        case "failed":
+          return { label: "Build failed", kind: "blocked", icon: "warning" as const };
+        case "interrupted":
+          return { label: "Interrupted", kind: "blocked", icon: "pause" as const };
+        default:
+          return { label: "Blocked", kind: "blocked", icon: "lock" as const };
+      }
   }
 }

@@ -103,10 +103,11 @@ export function readProviderEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ) {
   const executable = (provider === "codex" ? env.JARI_CODEX_BIN : env.JARI_CLAUDE_BIN) || provider;
-  return {
-    executable,
-    env: Object.fromEntries(
-      Object.entries(env).filter(([key]) => !/^(JARI_)?ATLASSIAN_/i.test(key)),
-    ),
-  };
+  return { executable, env: withoutAtlassianEnvironment(env) };
+}
+
+export function withoutAtlassianEnvironment(env: NodeJS.ProcessEnv = process.env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !/^(JARI_)?ATLASSIAN_/i.test(key)),
+  );
 }

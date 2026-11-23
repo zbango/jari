@@ -1,5 +1,6 @@
-import type { WorkflowPlan } from "@agent-desktop/shared";
+import type { WorkflowBuild, WorkflowBuildTask, WorkflowPlan } from "@agent-desktop/shared";
 import { Button } from "@once-ui-system/core/components/Button";
+import { Column } from "@once-ui-system/core/components/Column";
 import { Icon } from "@once-ui-system/core/components/Icon";
 import {
   Background,
@@ -13,7 +14,7 @@ import {
 } from "@xyflow/react";
 import type { Edge, Node, NodeProps, Viewport } from "@xyflow/react";
 import { useRef, useState } from "react";
-import { stageOrder, stages, stageStatus } from "./stages";
+import { buildTaskStatus, stageOrder, stages, stageStatus } from "./stages";
 import type { Selection, Stage } from "./stages";
 
 type StageNodeData = {
@@ -22,6 +23,7 @@ type StageNodeData = {
   selected: boolean;
   hasWorkflow: boolean;
   plan?: WorkflowPlan | undefined;
+  build?: WorkflowBuild;
   select(): void;
   toggle(): void;
 };
@@ -36,10 +38,19 @@ type SectionNode = Node<
   },
   "section"
 >;
+type BuildTaskNode = Node<
+  {
+    task: WorkflowBuildTask;
+    shown: boolean;
+    selected: boolean;
+    select(): void;
+  },
+  "buildTask"
+>;
 
 function StageCard({ data }: NodeProps<StageNode>) {
   const stage = stages[data.stage];
-  const status = stageStatus(data.stage, data.hasWorkflow, data.plan);
+  const status = stageStatus(data.stage, data.hasWorkflow, data.plan, data.build);
   return (
     <div className="workflow-node" data-selected={data.selected} data-stage={data.stage}>
       <Handle type="target" position={Position.Left} />
@@ -94,12 +105,41 @@ function SectionCard({ data }: NodeProps<SectionNode>) {
   );
 }
 
-const nodeTypes = { stage: StageCard, section: SectionCard };
-type GraphNode = StageNode | SectionNode;
+function BuildTaskCard({ data }: NodeProps<BuildTaskNode>) {
+  const { task, shown, selected, select } = data;
+  const status = buildTaskStatus[task.state];
+  return (
+    <div className="workflow-section" data-shown={shown} aria-hidden={!shown} inert={!shown}>
+      <Handle type="target" position={Position.Top} />
+      <button
+        className="nopan"
+        type="button"
+        aria-label={`Inspect task ${task.id}: ${task.title}`}
+        aria-pressed={selected}
+        onClick={select}
+      >
+        <Column gap="4" minWidth="0">
+          <span className="workflow-task-title" title={task.title}>
+            {task.id}. {task.title}
+          </span>
+          <span className="workflow-status" data-kind={status.kind}>
+            <Icon name={status.icon} size="xs" decorative />
+            {status.label}
+          </span>
+        </Column>
+      </button>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+}
+
+const nodeTypes = { stage: StageCard, section: SectionCard, buildTask: BuildTaskCard };
+type GraphNode = StageNode | SectionNode | BuildTaskNode;
 type Props = {
   selection: Selection;
   hasWorkflow: boolean;
   plan?: WorkflowPlan | undefined;
+  build?: WorkflowBuild;
   onSelect(selection: Selection): void;
 };
 
@@ -111,15 +151,26 @@ export function WorkflowGraph(props: Props) {
   );
 }
 
-function Canvas({ selection, hasWorkflow, plan, onSelect }: Props) {
+function Canvas({ selection, hasWorkflow, plan, build, onSelect }: Props) {
   const [expanded, setExpanded] = useState<Partial<Record<Stage, boolean>>>({});
   const [focus, setFocus] = useState<Stage | null>(null);
   const overview = useRef<Viewport | null>(null);
   const flow = useReactFlow<GraphNode>();
+  const tasks = build?.tasks ?? [];
+
+  function isExpanded(stage: Stage) {
+    return expanded[stage] ?? (stage === "build" && tasks.length > 0);
+  }
+
+  function sectionIds(stage: Stage) {
+    return stage === "build" && tasks.length
+      ? tasks.map(({ id }) => `build:task-${id}`)
+      : Object.keys(stages[stage].sections).map((section) => `${stage}:${section}`);
+  }
 
   function toggle(stage: Stage) {
-    setExpanded({ ...expanded, [stage]: !expanded[stage] });
-    if (expanded[stage] && selection.stage === stage && selection.section) {
+    setExpanded({ ...expanded, [stage]: !isExpanded(stage) });
+    if (isExpanded(stage) && selection.stage === stage && (selection.section || selection.taskId)) {
       onSelect({ stage });
     }
   }
@@ -132,9 +183,7 @@ function Canvas({ selection, hasWorkflow, plan, onSelect }: Props) {
       }
       setFocus(stage);
       onSelect({ stage });
-      const visibleNodes = expanded[stage]
-        ? [stage, ...Object.keys(stages[stage].sections).map((section) => `${stage}:${section}`)]
-        : [stage];
+      const visibleNodes = isExpanded(stage) ? [stage, ...sectionIds(stage)] : [stage];
       void flow.fitView({
         nodes: visibleNodes.map((id) => ({ id })),
         maxZoom: 1.25,
@@ -163,10 +212,11 @@ function Canvas({ selection, hasWorkflow, plan, onSelect }: Props) {
       hidden: !shown,
       data: {
         stage,
-        expanded: Boolean(expanded[stage]),
-        selected: selection.stage === stage && !selection.section,
+        expanded: isExpanded(stage),
+        selected: selection.stage === stage && !selection.section && !selection.taskId,
         hasWorkflow,
         plan,
+        build,
         select: () => onSelect({ stage }),
         toggle: () => toggle(stage),
       },
@@ -182,6 +232,37 @@ function Canvas({ selection, hasWorkflow, plan, onSelect }: Props) {
         markerEnd: { type: MarkerType.ArrowClosed, color: "var(--graph-link)" },
         className: "workflow-stage-link",
       });
+    }
+    if (stage === "build" && tasks.length) {
+      for (const [index, task] of tasks.entries()) {
+        const id = `build:task-${task.id}`;
+        const expanded = isExpanded(stage);
+        nodes.push({
+          id,
+          type: "buildTask",
+          position: { x, y: 166 + index * 76 },
+          width: 200,
+          height: 58,
+          hidden: !shown,
+          data: {
+            task,
+            shown: expanded,
+            selected: selection.stage === "build" && selection.taskId === task.id,
+            select: () => onSelect({ stage: "build", taskId: task.id }),
+          },
+        });
+        const previous = tasks[index - 1];
+        edges.push({
+          id: `build-step-${task.id}`,
+          source: previous ? `build:task-${previous.id}` : stage,
+          sourceHandle: previous ? undefined : "sections",
+          target: id,
+          type: "smoothstep",
+          markerEnd: { type: MarkerType.ArrowClosed, color: "var(--graph-link)" },
+          className: expanded ? "workflow-section-link" : "workflow-section-link is-collapsed",
+        });
+      }
+      continue;
     }
     for (const [row, [section, name]] of Object.entries(stages[stage].sections).entries()) {
       const id = `${stage}:${section}`;

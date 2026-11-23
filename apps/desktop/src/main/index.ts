@@ -63,15 +63,24 @@ async function createWindow(): Promise<void> {
           observer.disconnect();
           reject(new Error("The React shell did not render"));
         }, 10000);
+        let requestedWizard = false;
         const readShell = () => {
-          const canvas = document.querySelector("[data-workflow-canvas]");
-          if (!canvas?.querySelector(".react-flow__node") || !document.querySelector('#jira-issue[aria-busy="false"]')) return;
+          const onboarding = document.querySelector("[data-workflow-onboarding]");
+          const action = onboarding?.querySelector("[data-new-workflow]");
+          if (!action || action.disabled) return;
+          if (!requestedWizard) {
+            requestedWizard = true;
+            action.click();
+            return;
+          }
+          const dialog = document.querySelector(".workflow-intake-sheet[role=dialog]");
+          if (!dialog?.querySelector("h2")?.textContent.includes("Choose a workspace")) return;
           observer.disconnect();
           clearTimeout(timer);
           resolve({
             name: document.querySelector("h1")?.textContent,
             version: document.querySelector("[data-desktop-version]")?.textContent,
-            stages: ["idea", "plan", "build"].every(stage => canvas.querySelector(\`[data-stage="\${stage}"]\`)),
+            canvasVisible: Boolean(document.querySelector("[data-workflow-canvas]")),
             display: getComputedStyle(document.querySelector("main")).display,
             hasNode: typeof require !== "undefined" || typeof process !== "undefined",
           });
@@ -84,7 +93,7 @@ async function createWindow(): Promise<void> {
     if (
       shell.name !== productName ||
       shell.version !== `Version ${app.getVersion()}` ||
-      !shell.stages ||
+      shell.canvasVisible ||
       shell.display !== "grid" ||
       shell.hasNode
     ) {

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { readKnowledgeNote } from "./knowledge";
 import { openWorkflowStore } from "./workflow-store";
@@ -10,6 +11,10 @@ it("persists ordered workflow records across database reopen", () => {
   const file = join(directory, "workflows.sqlite");
   try {
     const store = openWorkflowStore(file);
+    expect(store.lastWorkspace()).toBeNull();
+    store.saveWorkspace(directory);
+    const lastWorkspace = join(directory, "workspace-two");
+    store.saveWorkspace(lastWorkspace);
     const input = {
       request: "Trabajemos en FIN-5546.",
       provider: "claude",
@@ -52,20 +57,28 @@ it("persists ordered workflow records across database reopen", () => {
     const knowledge = [
       { area: note.area, title: note.title, bodyText: note.bodyText, paths: note.paths },
     ];
+    const custom = {
+      model: "sonnet",
+      effort: "high",
+      skillIds: [join(directory, "skills", "review", "SKILL.md")],
+    };
     const jira = store.create({
       ...input,
       request: source.title,
       source,
       knowledge,
-      plan: { state: "running" },
+      plan: { state: "running", custom },
     });
-    const plan = { state: "ready", text: "Review the existing payment view." } as const;
+    const plan = { state: "ready", text: "Review the existing payment view.", custom } as const;
     store.updatePlan(jira.id, plan);
+    const build = { state: "completed", approvedAt: jira.createdAt, summary: "Done." } as const;
+    store.saveBuild(jira.id, build);
     store.close();
 
     const reopened = openWorkflowStore(file);
     try {
-      expect(reopened.list()).toEqual([{ ...jira, plan }, second, first]);
+      expect(reopened.lastWorkspace()).toBe(lastWorkspace);
+      expect(reopened.list()).toEqual([{ ...jira, plan, build }, second, first]);
       expect(reopened.listKnowledge()).toEqual([note]);
       const updated = reopened.saveKnowledge(note.id, {
         ...note,
@@ -84,6 +97,23 @@ it("persists ordered workflow records across database reopen", () => {
           paths: ["src/ledger.ts", "src/rules.ts"],
         },
       ]);
+      reopened.removeWorkflow(jira.id);
+      expect(reopened.list()).toEqual([second, first]);
+      const reader = new DatabaseSync(file, { readOnly: true });
+      try {
+        expect(
+          reader
+            .prepare(`
+          SELECT
+            (SELECT count(*) FROM workflow_intake WHERE id = ?1) AS intake,
+            (SELECT count(*) FROM workflow_knowledge WHERE id = ?1) AS knowledge,
+            (SELECT count(*) FROM workflow_build WHERE id = ?1) AS build
+        `)
+            .get(jira.id),
+        ).toEqual({ intake: 0, knowledge: 0, build: 0 });
+      } finally {
+        reader.close();
+      }
     } finally {
       reopened.close();
     }

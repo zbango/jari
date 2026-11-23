@@ -6,6 +6,6 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/renderer/src/**/*.test.tsx", "src/main/**/*.test.ts"],
-    server: { deps: { inline: ["@once-ui-system/core"] } },
+    server: { deps: { inline: ["@once-ui-system/core", "@once-ui-system/fx"] } },
   },
 });

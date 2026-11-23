@@ -15,7 +15,7 @@ import { Text } from "@once-ui-system/core/components/Text";
 import { ThemeSwitcher } from "@once-ui-system/core/components/ThemeSwitcher";
 import { useEffect, useRef, useState } from "react";
 import icon from "../../../resources/icon.png?url";
-import { workflowError } from "./workflow/workflow-form";
+import { workflowError } from "./workflow/workflow-error";
 
 type JiraCheck = { state: "checking" | "success" } | { state: "error"; message: string };
 
@@ -49,7 +49,8 @@ export function SettingsPage({
   async function verifyJira() {
     setJira({ state: "checking" });
     try {
-      await checkJira();
+      const response = await checkJira();
+      if (response.syncError) throw new Error(response.syncError);
       setJira({ state: "success" });
     } catch (error) {
       setJira({ state: "error", message: workflowError(error, "Jira could not be reached.") });

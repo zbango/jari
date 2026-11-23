@@ -2,22 +2,33 @@ import { isWorkflowProvider, workflowProviders } from "@agent-desktop/shared";
 import type {
   DesktopInfo,
   KnowledgeNote,
+  ReplayPlanInput,
   WorkflowApi,
   WorkflowProvider,
   WorkflowRecord,
 } from "@agent-desktop/shared";
+import { useToast } from "@once-ui-system/core";
 import { Button } from "@once-ui-system/core/components/Button";
+import { Column } from "@once-ui-system/core/components/Column";
+import { Dialog } from "@once-ui-system/core/components/Dialog";
+import { Feedback } from "@once-ui-system/core/components/Feedback";
 import { Icon } from "@once-ui-system/core/components/Icon";
+import { IconButton } from "@once-ui-system/core/components/IconButton";
 import { Row } from "@once-ui-system/core/components/Row";
 import { Text } from "@once-ui-system/core/components/Text";
 import { Activity, useEffect, useRef, useState } from "react";
 import icon from "../../../resources/icon.png?url";
 import { KnowledgePage } from "./knowledge-page";
 import { SettingsPage } from "./settings-page";
+import { PlanReplay } from "./workflow/plan-replay";
+import { ProviderMessages } from "./workflow/provider-messages";
 import type { Selection } from "./workflow/stages";
 import { WorkflowDetails } from "./workflow/workflow-details";
-import { WorkflowForm, workflowError } from "./workflow/workflow-form";
+import { workflowError } from "./workflow/workflow-error";
+import { WorkflowForm } from "./workflow/workflow-form";
 import { WorkflowGraph } from "./workflow/workflow-graph";
+import { WorkflowOnboarding } from "./workflow/workflow-onboarding";
+import { WorkflowPlanContent } from "./workflow/workflow-plan-content";
 
 const defaultProviderKey = "agent-desktop.default-provider";
 
@@ -31,8 +42,19 @@ function readDefaultProvider(): WorkflowProvider {
   return "codex";
 }
 
+function isWorkflowRunning({ plan, build }: WorkflowRecord) {
+  return (
+    plan?.state === "running" ||
+    (plan?.state === "ready" && plan.reviewAttempt?.state === "running") ||
+    build?.state === "running"
+  );
+}
+
 export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }) {
+  const { addToast } = useToast();
   const [page, setPage] = useState<"workflows" | "settings" | "knowledge">("workflows");
+  const newWorkflowButton = useRef<HTMLButtonElement>(null);
+  const historyRevision = useRef(0);
   const settingsButton = useRef<HTMLButtonElement>(null);
   const knowledgeButton = useRef<HTMLButtonElement>(null);
   const [knowledge, setKnowledge] = useState<KnowledgeNote[]>();
@@ -41,8 +63,16 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   const [defaultProvider, setDefaultProvider] = useState(readDefaultProvider);
   const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const [intakeOpen, setIntakeOpen] = useState(false);
+  const [reviewId, setReviewId] = useState<string>();
+  const [approving, setApproving] = useState(false);
+  const [approvalError, setApprovalError] = useState("");
   const current = workflows.find(({ id }) => id === currentId) ?? null;
-  const planning = workflows.some(({ plan }) => plan?.state === "running");
+  const review = workflows.find(({ id }) => id === reviewId);
+  const working = workflows.some(isWorkflowRunning);
+  const [deleteTarget, setDeleteTarget] = useState<WorkflowRecord>();
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [selection, setSelection] = useState<Selection>({ stage: "idea" });
   const [canvasSession, setCanvasSession] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -88,13 +118,14 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   }, [api, loadAttempt]);
 
   useEffect(() => {
-    if (!planning) return;
+    if (!working) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
+      const revision = historyRevision.current;
       try {
         const records = await api.list();
-        if (active) setWorkflows(records);
+        if (active && revision === historyRevision.current) setWorkflows(records);
       } catch {
         // The next refresh can recover a transient IPC failure.
       }
@@ -105,24 +136,105 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
       active = false;
       clearTimeout(timer);
     };
-  }, [api, planning]);
-
-  function newWorkflow() {
-    if (current) {
-      setCurrentId(null);
-      setSelection({ stage: "idea" });
-      setCanvasSession((session) => session + 1);
-    } else {
-      document.getElementById("jira-scope")?.focus();
-    }
-  }
+  }, [api, working]);
 
   function updateWorkflow(record: WorkflowRecord) {
+    historyRevision.current += 1;
     setWorkflows((records) => records.map((item) => (item.id === record.id ? record : item)));
   }
 
+  async function retryPlan(id: string) {
+    updateWorkflow(await api.retryPlan(id));
+  }
+
+  async function exportTranscript(id: string) {
+    try {
+      if (await api.exportTranscript(id)) {
+        addToast({ tone: "success", message: "Provider transcript exported" });
+      }
+    } catch (error) {
+      addToast({
+        tone: "danger",
+        message: workflowError(error, "The provider transcript could not be exported."),
+      });
+    }
+  }
+
+  async function openWorkspaceInCursor(id: string) {
+    try {
+      await api.openWorkspaceInCursor(id);
+    } catch (error) {
+      addToast({
+        tone: "danger",
+        message: workflowError(error, "The workspace could not be opened in Cursor."),
+      });
+    }
+  }
+
+  async function answerPlan(id: string, answer: string) {
+    updateWorkflow(await api.answerPlan(id, answer));
+  }
+
+  function openPlanReview(id: string) {
+    setApprovalError("");
+    setReviewId(id);
+  }
+
+  function showNewWorkflow(workflow: WorkflowRecord) {
+    historyRevision.current += 1;
+    setWorkflows((records) => [workflow, ...records.filter(({ id }) => id !== workflow.id)]);
+    setCurrentId(workflow.id);
+    openPlanReview(workflow.id);
+    setSelection({ stage: "plan" });
+    setCanvasSession((session) => session + 1);
+  }
+
+  async function replayPlan(id: string, input: ReplayPlanInput) {
+    showNewWorkflow(await api.replayPlan(id, input));
+  }
+
+  async function removeWorkflow() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError("");
+    const id = deleteTarget.id;
+    try {
+      await api.removeWorkflow(id);
+      historyRevision.current += 1;
+      setWorkflows((records) => records.filter((record) => record.id !== id));
+      if (currentId === id) {
+        setCurrentId(workflows.find((record) => record.id !== id)?.id ?? null);
+        setSelection({ stage: "idea" });
+        setCanvasSession((session) => session + 1);
+      }
+      setDeleteTarget(undefined);
+      requestAnimationFrame(() => newWorkflowButton.current?.focus());
+      addToast({ tone: "success", message: "Workflow deleted" });
+    } catch (error) {
+      setDeleteError(workflowError(error, "The workflow could not be deleted."));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function continueToBuild(workflow: WorkflowRecord) {
+    if (approving) return;
+    setApproving(true);
+    setApprovalError("");
+    try {
+      if (!workflow.build) updateWorkflow(await api.approvePlan(workflow.id));
+      setCurrentId(workflow.id);
+      setSelection({ stage: "build" });
+      setCanvasSession((session) => session + 1);
+      setReviewId(undefined);
+    } catch (error) {
+      setApprovalError(workflowError(error, "The plan could not be approved."));
+    } finally {
+      setApproving(false);
+    }
+  }
+
   const workspaceName = current?.workspacePath.split(/[/\\]/).filter(Boolean).at(-1);
-  const hasWorkflow = current !== null;
 
   return (
     <>
@@ -161,15 +273,18 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
           </header>
 
           <aside className="workflow-sidebar" aria-label="Saved workflows">
-            <Button
-              variant="secondary"
-              type="button"
-              prefixIcon="plus"
-              onClick={newWorkflow}
-              disabled={loading || Boolean(loadError)}
-            >
-              New workflow
-            </Button>
+            {current && (
+              <Button
+                ref={newWorkflowButton}
+                variant="secondary"
+                type="button"
+                prefixIcon="plus"
+                aria-haspopup="dialog"
+                onClick={() => setIntakeOpen(true)}
+              >
+                New workflow
+              </Button>
+            )}
             <h2>Workflows</h2>
             {loading ? (
               <p role="status">Loading workflows…</p>
@@ -178,7 +293,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
             ) : (
               <ul className="workflow-history">
                 {workflows.map((workflow) => (
-                  <li key={workflow.id}>
+                  <Row as="li" key={workflow.id} gap="4" vertical="center">
                     <button
                       type="button"
                       className="history-item"
@@ -191,91 +306,226 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                         <small>{workflowProviders[workflow.provider]}</small>
                       </span>
                     </button>
-                  </li>
+                    <IconButton
+                      type="button"
+                      icon="trash"
+                      variant="tertiary"
+                      size="s"
+                      tone="danger"
+                      disabled={isWorkflowRunning(workflow)}
+                      tooltip="Delete workflow"
+                      aria-label={`Delete workflow: ${workflow.request}`}
+                      onClick={() => {
+                        setDeleteError("");
+                        setDeleteTarget(workflow);
+                      }}
+                    />
+                  </Row>
                 ))}
               </ul>
             )}
           </aside>
 
-          <div className="workflow-workspace">
-            <header className="workspace-header">
-              <div>
-                <h2 title={current?.request}>{current?.request ?? "Workflow canvas"}</h2>
-                {current && (
-                  <div className="workspace-meta">
-                    <span>{workflowProviders[current.provider]}</span>
-                    <span title={current.workspacePath}>
-                      {workspaceName ?? current.workspacePath}
-                    </span>
+          {current ? (
+            <>
+              <div className="workflow-workspace">
+                <header className="workspace-header">
+                  <div>
+                    <h2 title={current.request}>{current.request}</h2>
+                    <div className="workspace-meta">
+                      <span>{workflowProviders[current.provider]}</span>
+                      <span title={current.workspacePath}>
+                        {workspaceName ?? current.workspacePath}
+                      </span>
+                    </div>
                   </div>
-                )}
+                  <Row gap="8" vertical="center" horizontal="end" wrap>
+                    <span className="draft-label">Saved locally</span>
+                    <Button
+                      type="button"
+                      size="s"
+                      variant="secondary"
+                      onClick={() => void openWorkspaceInCursor(current.id)}
+                    >
+                      Open in Cursor
+                    </Button>
+                  </Row>
+                </header>
+                <WorkflowGraph
+                  key={canvasSession}
+                  hasWorkflow
+                  plan={current.plan}
+                  build={current.build}
+                  selection={selection}
+                  onSelect={setSelection}
+                />
               </div>
-              {current && <span className="draft-label">Saved locally</span>}
-            </header>
-            <WorkflowGraph
-              key={canvasSession}
-              hasWorkflow={hasWorkflow}
-              plan={current?.plan}
-              selection={selection}
-              onSelect={setSelection}
-            />
-          </div>
-
-          <aside className="workflow-inspector" aria-label="Workflow details">
-            {loading ? (
-              <p role="status">Opening workflow history…</p>
-            ) : loadError ? (
-              <>
-                <h2>Workflow history</h2>
-                <p className="form-error" role="alert">
-                  {loadError}
-                </p>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => {
-                    setLoadError("");
-                    setLoading(true);
-                    setLoadAttempt((attempt) => attempt + 1);
+              <aside className="workflow-inspector" aria-label="Workflow details">
+                <WorkflowDetails
+                  key={current.id}
+                  workflow={current}
+                  selection={selection}
+                  openJiraLink={api.openJiraLink}
+                  loadIssue={api.linkedIssue}
+                  openPlanReview={() => openPlanReview(current.id)}
+                  exportTranscript={exportTranscript}
+                  readTranscript={api.readTranscript}
+                  providerLive={isWorkflowRunning(current)}
+                  retryPlan={() => retryPlan(current.id)}
+                  answerPlan={(answer) => answerPlan(current.id, answer)}
+                  startBuild={async () => {
+                    updateWorkflow(await api.startBuild(current.id));
+                    setSelection({ stage: "build" });
                   }}
-                >
-                  Retry
-                </Button>
-              </>
-            ) : current ? (
-              <WorkflowDetails
-                key={current.id}
-                workflow={current}
-                selection={selection}
-                openJiraLink={api.openJiraLink}
-                retryPlan={async () => {
-                  updateWorkflow(await api.retryPlan(current.id));
-                }}
-                answerPlan={async (answer) => {
-                  updateWorkflow(await api.answerPlan(current.id, answer));
-                }}
-              />
-            ) : (
-              <WorkflowForm
-                api={api}
-                defaultProvider={defaultProvider}
-                knowledge={knowledge}
-                onOpenKnowledge={() => setPage("knowledge")}
-                onCreated={(workflow) => {
-                  setWorkflows((records) => [workflow, ...records]);
-                  setCurrentId(workflow.id);
-                  setSelection({ stage: "plan" });
-                  setCanvasSession((session) => session + 1);
-                }}
-              />
-            )}
-          </aside>
+                  reviewBuildTask={async (input) => {
+                    updateWorkflow(await api.reviewBuildTask(current.id, input));
+                    if (!input.feedback) setSelection({ stage: "build" });
+                  }}
+                />
+              </aside>
+            </>
+          ) : loading || loadError ? (
+            <Column className="workflow-empty" padding="l" horizontal="center" vertical="center">
+              {loading ? (
+                <Text role="status">Opening workflow history…</Text>
+              ) : (
+                <Feedback tone="danger" title="Workflow history" description={loadError}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setLoadError("");
+                      setLoading(true);
+                      setLoadAttempt((attempt) => attempt + 1);
+                    }}
+                  >
+                    Retry
+                  </Button>
+                </Feedback>
+              )}
+            </Column>
+          ) : (
+            <WorkflowOnboarding
+              newWorkflowButton={newWorkflowButton}
+              onNewWorkflow={() => setIntakeOpen(true)}
+            />
+          )}
         </main>
       </Activity>
+      {deleteTarget && (
+        <Dialog
+          open
+          title="Delete workflow?"
+          description={`“${deleteTarget.request}” and its saved history will be permanently removed from this app.`}
+          closeOnClickaway={false}
+          showClose={!deleting}
+          onClose={() => {
+            if (!deleting) setDeleteTarget(undefined);
+          }}
+          footer={
+            <>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={deleting}
+                onClick={() => setDeleteTarget(undefined)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                tone="danger"
+                loading={deleting}
+                disabled={deleting}
+                onClick={() => void removeWorkflow()}
+              >
+                Permanently delete
+              </Button>
+            </>
+          }
+        >
+          {deleteError && <Feedback tone="danger" description={deleteError} />}
+        </Dialog>
+      )}
+      {intakeOpen && (
+        <WorkflowForm
+          open={page === "workflows"}
+          onClose={() => setIntakeOpen(false)}
+          api={api}
+          defaultProvider={defaultProvider}
+          knowledge={knowledge}
+          onOpenKnowledge={() => setPage("knowledge")}
+          onCreated={(workflow) => {
+            setIntakeOpen(false);
+            showNewWorkflow(workflow);
+          }}
+        />
+      )}
+      {review && (
+        <Dialog
+          className="workflow-intake-sheet"
+          open
+          title="Review plan"
+          description={`Step 3 of 3 · ${review.request}`}
+          onClose={() => {
+            if (!approving) setReviewId(undefined);
+          }}
+          closeOnClickaway={false}
+          maxWidth="58rem"
+          footer={
+            <Row gap="8" wrap horizontal="end">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={approving}
+                onClick={() => setReviewId(undefined)}
+              >
+                Return to workflow
+              </Button>
+              {review.plan?.state === "ready" && review.plan.review && (
+                <Button
+                  type="button"
+                  suffixIcon="arrowRight"
+                  loading={approving}
+                  disabled={approving}
+                  onClick={() => void continueToBuild(review)}
+                >
+                  {review.build ? "Open Build" : "Approve plan and continue to Build"}
+                </Button>
+              )}
+            </Row>
+          }
+        >
+          <ProviderMessages
+            key={`messages:${review.id}`}
+            workflow={review}
+            live={isWorkflowRunning(review)}
+            readTranscript={api.readTranscript}
+            exportTranscript={exportTranscript}
+          />
+          {review.source && review.plan && !isWorkflowRunning(review) && (
+            <PlanReplay
+              key={`replay:${review.id}`}
+              workflow={review}
+              loadOptions={api.planningOptions}
+              replay={(input) => replayPlan(review.id, input)}
+            />
+          )}
+          <WorkflowPlanContent
+            key={review.id}
+            workflow={review}
+            retryPlan={() => retryPlan(review.id)}
+            answerPlan={(answer) => answerPlan(review.id, answer)}
+            generateReview={async () => updateWorkflow(await api.generatePlanReview(review.id))}
+            detailed
+          />
+          {approvalError && <Feedback tone="danger" description={approvalError} />}
+        </Dialog>
+      )}
       {page === "settings" && (
         <SettingsPage
           desktop={desktop}
-          checkJira={() => api.assignedSprintIssues()}
+          checkJira={() => api.assignedSprintIssues(true)}
           defaultProvider={defaultProvider}
           onProviderChange={(provider) => {
             localStorage.setItem(defaultProviderKey, provider);
@@ -310,7 +560,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
           }}
           onBack={() => {
             setPage("workflows");
-            requestAnimationFrame(() => knowledgeButton.current?.focus());
+            if (!intakeOpen) requestAnimationFrame(() => knowledgeButton.current?.focus());
           }}
         />
       )}
