@@ -11,6 +11,7 @@ import { LayoutProvider, ThemeProvider, ToastProvider } from "@once-ui-system/co
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./app";
+import { canvasStyleStorageKey } from "./workflow/workflow-canvas-style";
 
 const desktop = { name: "Agent Desktop", version: "0.1.0" };
 const issue: WorkItem = {
@@ -236,7 +237,8 @@ it("opens the selected committed file's diff in a separate dialog", async () => 
   );
   vi.mocked(api.readBuildCommitDiff).mockResolvedValue(patch);
   renderApp(api);
-  fireEvent.click(await screen.findByRole("button", { name: "Inspect task 1: Update a card" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Expand task queue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Inspect task 1: Update a card" }));
   const panel = within(screen.getByRole("complementary", { name: "Workflow details" }));
   fireEvent.click(panel.getByRole("button", { name: "Changed files (1)" }));
   fireEvent.click(panel.getByRole("button", { name: "src/main.ts" }));
@@ -376,6 +378,31 @@ it("creates a canvas note and opens it for configuration", async () => {
   fireEvent.click(inspector.getByRole("tab", { name: "Settings" }));
   expect(inspector.getByRole("textbox", { name: "Name" })).toHaveProperty("value", note.title);
   expect(inspector.getByRole("button", { name: "Remove detail" })).toBeTruthy();
+});
+
+it("changes the canvas layout without losing the current selection and restores the style", async () => {
+  const api = fixtureApi([{ ...saved, plan: { state: "ready", text: "Review the scope." } }]);
+  const first = renderApp(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Inspect Plan" }));
+  const canvas = screen.getByRole("region", { name: "Workflow canvas" });
+  const styles = within(within(canvas).getByRole("radiogroup", { name: "Canvas style" }));
+  const planNode = canvas.querySelector<HTMLElement>('.react-flow__node[data-id="plan"]');
+  expect(planNode?.style.transform).toMatch(/translate\(256px(?:,\s*0px)?\)/);
+  fireEvent.click(styles.getByRole("radio", { name: "Timeline" }));
+  expect(canvas.getAttribute("data-canvas-style")).toBe("timeline");
+  expect(planNode?.style.transform).toMatch(/translate\(0px,\s*\d+px\)/);
+  expect(screen.getByRole("button", { name: "Inspect Plan", pressed: true })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Scope" })).toBeTruthy();
+
+  fireEvent.click(styles.getByRole("radio", { name: "Compact" }));
+  expect(canvas.getAttribute("data-canvas-style")).toBe("compact");
+  expect(localStorage.getItem(canvasStyleStorageKey)).toBe("compact");
+  first.unmount();
+
+  renderApp(api);
+  const reloaded = await screen.findByRole("region", { name: "Workflow canvas" });
+  expect(reloaded.getAttribute("data-canvas-style")).toBe("compact");
+  expect(within(reloaded).getByRole("radio", { name: "Compact", checked: true })).toBeTruthy();
 });
 
 it("opens the selected workflow workspace in Cursor", async () => {
@@ -684,6 +711,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.removeItem("agent-desktop.default-provider");
   localStorage.removeItem("agent-desktop.mascot-design");
+  localStorage.removeItem(canvasStyleStorageKey);
 });
 
 it("loads active sprint work, shows the issue, and starts the selected provider's plan", async () => {
@@ -965,6 +993,21 @@ it("opens each Build task in its own node and submits feedback for the chosen at
       },
     });
   renderApp(api);
+  expect(await screen.findByRole("button", { name: "Inspect task queue" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Inspect task 2: Add local storage" })).toBeNull();
+  const canvas = screen.getByRole("region", { name: "Workflow canvas" });
+  const buildDetails = [...canvas.querySelectorAll('[data-id^="build:"]')].filter(
+    (node) => !node.matches('[data-id^="build:task-"]'),
+  );
+  expect(buildDetails.slice(-3).map((node) => node.getAttribute("data-id"))).toEqual([
+    "build:summary",
+    "build:queue",
+    "build:new",
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: "Inspect task queue" }));
+  const queue = within(screen.getByRole("complementary", { name: "Workflow details" }));
+  expect(queue.getByRole("heading", { name: "Task queue" })).toBeTruthy();
+  expect(queue.getByRole("button", { name: "Open task 2: Add local storage" })).toBeTruthy();
   const nextNode = await screen.findByRole("button", { name: "Inspect task 2: Add local storage" });
   expect(nextNode.closest(".workflow-task")?.getAttribute("data-kind")).toBe("waiting");
   fireEvent.click(nextNode);
@@ -1206,6 +1249,57 @@ it("opens settings, saves the default provider, and verifies Jira access", async
   );
 });
 
+it("guides new users through onboarding and returns focus to the launch button", async () => {
+  renderApp(fixtureApi());
+  const launcher = await screen.findByRole("button", { name: "Take a tour" });
+  launcher.focus();
+  fireEvent.click(launcher);
+  const guide = within(screen.getByRole("dialog", { name: "App guide" }));
+  expect(guide.getByText("Step 1 of 4")).toBeTruthy();
+  expect(document.querySelector("[data-workflow-app]")?.hasAttribute("inert")).toBe(true);
+
+  fireEvent.click(guide.getByRole("button", { name: "Next" }));
+  fireEvent.click(guide.getByRole("button", { name: "Next" }));
+  expect(guide.getByRole("heading", { name: "Go from Idea to Build" })).toBeTruthy();
+  fireEvent.click(guide.getByRole("button", { name: "Back" }));
+  expect(guide.getByRole("heading", { name: "Bring in Company Knowledge" })).toBeTruthy();
+  fireEvent.click(guide.getByRole("button", { name: "Back" }));
+  expect(document.activeElement).toBe(guide.getByRole("button", { name: "Next" }));
+
+  fireEvent.keyDown(guide.getByRole("button", { name: "Next" }), { key: "Escape" });
+  await waitFor(() => expect(document.activeElement).toBe(launcher));
+  expect(screen.queryByRole("dialog", { name: "App guide" })).toBeNull();
+});
+
+it("uses the configured mascot in the canvas tour and returns to Mascot settings", async () => {
+  const api = fixtureApi([saved]);
+  renderApp(api);
+  await screen.findByRole("button", { name: "Inspect Build" });
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Mascot" }));
+  await chooseOption("Finish", "Matte");
+  await chooseOption("Preview activity", "Sleeping");
+  expect(screen.getByRole("img", { name: "Mascot preview" }).dataset.state).toBe("sleeping");
+  expect(JSON.parse(localStorage.getItem("agent-desktop.mascot-design") ?? "{}")).toEqual({
+    v: 1,
+    surface: "matte",
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Try the app guide" }));
+  const dialog = screen.getByRole("dialog", { name: "App guide" });
+  const guide = within(dialog);
+  expect(dialog.querySelector('[data-surface="matte"][data-state="idle"]')).toBeTruthy();
+  expect(guide.getByText("Step 1 of 6")).toBeTruthy();
+  for (let step = 0; step < 5; step++) {
+    fireEvent.click(guide.getByRole("button", { name: "Next" }));
+  }
+  fireEvent.click(guide.getByRole("button", { name: "Done" }));
+  const launcher = screen.getByRole("button", { name: "Try the app guide" });
+  expect(screen.getByRole("tab", { name: "Mascot", selected: true })).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(launcher));
+  expect(api.create).not.toHaveBeenCalled();
+});
+
 it("previews mascot changes and restores the saved mascot for a running task", async () => {
   const task: WorkflowBuildTask = {
     id: "1",
@@ -1430,7 +1524,53 @@ it("replaces the view actions when opening a knowledge note for editing", async 
   expect(api.knowledge.save).not.toHaveBeenCalled();
 });
 
-it("deletes a knowledge note from its card only after confirmation", async () => {
+it("filters the knowledge table across collapsed areas and can add a note to an area", async () => {
+  const api = fixtureApi();
+  vi.mocked(api.knowledge.list).mockResolvedValue([
+    {
+      id: "note-1",
+      area: "Finance",
+      title: "Ledger rules",
+      bodyHtml: "<p>Settlement rules</p>",
+      bodyText: "Settlement rules",
+      paths: ["src/finance.ts"],
+    },
+    {
+      id: "note-2",
+      area: "Support",
+      title: "Escalate a ticket",
+      bodyHtml: "<p>Handoff procedure</p>",
+      bodyText: "Handoff procedure",
+      paths: [],
+    },
+  ]);
+  renderApp(api);
+  fireEvent.click(screen.getByRole("button", { name: "Company Knowledge" }));
+  const table = within(screen.getByRole("table", { name: "Company Knowledge notes" }));
+  const finance = await table.findByRole("button", { name: "Finance", expanded: true });
+  fireEvent.click(finance);
+  expect(table.queryByRole("button", { name: "Ledger rules" })).toBeNull();
+
+  const search = screen.getByRole("searchbox", { name: "Search notes" });
+  fireEvent.change(search, { target: { value: " FINANCE.ts " } });
+  expect(table.getByRole("button", { name: "Ledger rules" })).toBeTruthy();
+  expect(table.queryByRole("button", { name: "Escalate a ticket" })).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("1 of 2 notes · 1 area");
+
+  fireEvent.change(search, { target: { value: "retention" } });
+  expect(table.getByRole("heading", { name: "No matching notes" })).toBeTruthy();
+  fireEvent.click(table.getByRole("button", { name: "Clear search" }));
+  expect(table.getByRole("button", { name: "Finance", expanded: false })).toBeTruthy();
+  expect(table.getByRole("button", { name: "Escalate a ticket" })).toBeTruthy();
+
+  fireEvent.click(table.getByRole("button", { name: "Add note in Finance" }));
+  const dialog = await screen.findByRole("dialog", { name: "New knowledge note" });
+  expect(within(dialog).getByRole<HTMLInputElement>("textbox", { name: "Area" }).value).toBe(
+    "Finance",
+  );
+});
+
+it("deletes a knowledge note from its row only after confirmation", async () => {
   const api = fixtureApi();
   vi.mocked(api.knowledge.list).mockResolvedValue([
     {

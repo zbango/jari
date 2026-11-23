@@ -13,6 +13,7 @@ import { SegmentedControl } from "@once-ui-system/core/components/SegmentedContr
 import { Setting } from "@once-ui-system/core/components/Setting";
 import { Tab, TabList, TabPanel, Tabs } from "@once-ui-system/core/components/Tabs";
 import { Text } from "@once-ui-system/core/components/Text";
+import type { Ref } from "react";
 import { useContext, useEffect, useRef, useState } from "react";
 import icon from "../../../resources/icon.png?url";
 import { MascotSettings } from "./mascot-settings";
@@ -29,6 +30,9 @@ const providers = (["codex", "claude"] as const).map((value) => ({
 
 export function SettingsPage({
   desktop,
+  initialTab,
+  guideButton,
+  onStartGuide,
   checkJira,
   defaultProvider,
   onProviderChange,
@@ -36,6 +40,9 @@ export function SettingsPage({
   onBack,
 }: {
   desktop: DesktopInfo;
+  initialTab: "appearance" | "mascot";
+  guideButton: Ref<HTMLButtonElement>;
+  onStartGuide(): void;
   checkJira: WorkflowApi["assignedSprintIssues"];
   defaultProvider: WorkflowProvider;
   onProviderChange(provider: WorkflowProvider): void;
@@ -103,7 +110,7 @@ export function SettingsPage({
           </Heading>
 
           <Tabs
-            defaultValue="appearance"
+            defaultValue={initialTab}
             fillWidth
             orientation={maxWidth("s") ? "horizontal" : "vertical"}
             gap="24"
@@ -119,10 +126,15 @@ export function SettingsPage({
               radius="l"
               s={{ fillWidth: true }}
             >
-              <Tab ref={firstTab} value="appearance" prefixIcon="light" tone="brand">
+              <Tab
+                ref={initialTab === "appearance" ? firstTab : undefined}
+                value="appearance"
+                prefixIcon="light"
+                tone="brand"
+              >
                 Appearance
               </Tab>
-              <Tab value="mascot" tone="brand">
+              <Tab ref={initialTab === "mascot" ? firstTab : undefined} value="mascot" tone="brand">
                 Mascot
               </Tab>
               <Tab value="workflows" prefixIcon="grid" tone="brand">
@@ -137,8 +149,13 @@ export function SettingsPage({
               <ThemeSettings />
             </TabPanel>
 
-            <TabPanel value="mascot" background="surface" border radius="l" padding="24">
-              <MascotSettings design={mascotDesign} onChange={onMascotChange} />
+            <TabPanel value="mascot" fillWidth minWidth="0">
+              <MascotSettings
+                design={mascotDesign}
+                guideButton={guideButton}
+                onChange={onMascotChange}
+                onStartGuide={onStartGuide}
+              />
             </TabPanel>
 
             <TabPanel

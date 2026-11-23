@@ -208,29 +208,46 @@ body:has(.workflow-intake-sheet, [data-workflow-plan-review]) > * .dropdown-port
   top: 1.1rem;
   left: 1.1rem;
   display: flex;
-  gap: 0.2rem;
-  padding: 0.25rem;
-  border: 1px solid var(--line);
-  border-radius: 0.6rem;
+  width: fit-content;
+  max-width: calc(100% - 2.2rem);
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.canvas-toolbar .canvas-toolbar-group {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.canvas-toolbar-group [role="radiogroup"] {
   background: var(--surface);
   box-shadow: 0 3px 10px #0d13200b;
 }
 
-.canvas-toolbar .view-tab {
-  padding: 0.42rem 0.7rem;
-  border-radius: 0.42rem;
-  color: var(--text-secondary);
-  font-weight: 590;
-  cursor: pointer;
-}
-
-.canvas-toolbar .view-tab:hover {
-  background: var(--surface-raised);
-}
-
-.canvas-toolbar .view-tab.is-selected {
-  background: var(--surface-selected);
+.canvas-toolbar-group [role="radio"][aria-checked="true"] {
   color: var(--accent);
+}
+
+.canvas-layout-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.canvas-layout-hint {
+  align-self: center;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.45rem;
+  background: var(--surface);
+}
+
+.workflow-canvas[data-layout-editing="true"] .react-flow__node.draggable {
+  cursor: grab;
+}
+
+.workflow-canvas[data-layout-editing="true"] .react-flow__node.dragging {
+  cursor: grabbing;
 }
 
 .workflow-node {
@@ -474,7 +491,7 @@ body:has(.workflow-intake-sheet, [data-workflow-plan-review]) > * .dropdown-port
   transform: translateY(-9px) scale(0.96);
 }
 
-.workflow-section button {
+.workflow-section > button {
   display: flex;
   width: 100%;
   height: 100%;
@@ -490,16 +507,52 @@ body:has(.workflow-intake-sheet, [data-workflow-plan-review]) > * .dropdown-port
   cursor: pointer;
 }
 
-.workflow-section button:hover,
-.workflow-section button[aria-pressed="true"] {
+.workflow-section > button:hover,
+.workflow-section > button[aria-pressed="true"] {
   border-color: var(--flow-tone, var(--accent));
   background: var(--flow-surface, var(--surface-selected));
   color: var(--flow-label, var(--flow-tone, var(--accent)));
 }
 
-.workflow-section[data-add="true"] button {
+.workflow-section[data-add="true"] > button {
   border-style: dashed;
   color: var(--accent);
+}
+
+.workflow-queue-body {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  padding-inline: 0.5rem 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  background: var(--surface);
+}
+
+.workflow-queue-body:hover,
+.workflow-queue-body[data-selected="true"] {
+  border-color: var(--accent);
+  background: var(--surface-selected);
+}
+
+.workflow-queue-action {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  align-self: stretch;
+  gap: 0.4rem;
+  text-align: left;
+  font-size: 0.76rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.workflow-queue-count {
+  margin-inline-start: auto;
+  margin-inline-end: 0.4rem;
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 .workflow-task {
@@ -525,6 +578,80 @@ body:has(.workflow-intake-sheet, [data-workflow-plan-review]) > * .dropdown-port
 
 .workflow-canvas .section-handle {
   left: 12px;
+}
+
+.workflow-canvas[data-canvas-style="timeline"] .section-handle {
+  left: auto;
+}
+
+.workflow-canvas[data-canvas-style="timeline"] .react-flow__background {
+  opacity: 0.4;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .react-flow {
+  background: transparent;
+}
+
+.workflow-canvas[data-canvas-style="timeline"] .workflow-node {
+  border-color: var(--line);
+  border-inline-start: 4px solid var(--flow-tone, var(--graph-link));
+  background: linear-gradient(105deg, var(--flow-surface, var(--surface-raised)), var(--surface));
+  border-radius: 0.55rem;
+}
+
+.workflow-canvas[data-canvas-style="timeline"] .workflow-node[data-selected="true"] {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.workflow-canvas[data-canvas-style="timeline"] .workflow-section > button {
+  border-color: var(--line);
+  border-radius: 0.55rem;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-node {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  border-block-end: 3px solid var(--flow-tone, var(--graph-link));
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-node[data-selected="true"] {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-node-description {
+  display: none;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-node-main {
+  align-content: center;
+  padding: 0.42rem 0.65rem 0.15rem;
+  gap: 0.23rem;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-node-title {
+  font-size: 0.92rem;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-milestone-node .workflow-node-main {
+  padding-bottom: 0.42rem;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .milestone-title {
+  -webkit-line-clamp: 1;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-node-footer {
+  padding: 0.14rem 0.5rem 0.28rem 0.65rem;
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-section > button {
+  border-color: var(--line);
+}
+
+.workflow-canvas[data-canvas-style="compact"] .workflow-section[data-add="true"] > button {
+  border-color: var(--graph-link);
 }
 
 .workflow-stage-link .react-flow__edge-path,
@@ -665,4 +792,78 @@ body:has(.workflow-intake-sheet, [data-workflow-plan-review]) > * .dropdown-port
   .workflow-canvas .workflow-link--running.animated .react-flow__edge-path {
     animation: none;
   }
+}
+
+.app-guide {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.app-guide-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 70%);
+}
+
+.app-guide-spotlight {
+  position: absolute;
+  border-radius: var(--radius-m);
+  box-shadow:
+    0 0 0 2px var(--brand-on-background-medium),
+    0 0 0 200vmax rgb(0 0 0 / 70%);
+}
+
+.app-guide-panel {
+  position: absolute;
+  width: min(23rem, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border-radius: var(--radius-xl);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+}
+
+.knowledge-page {
+  background-image: radial-gradient(ellipse at 48% 0, var(--brand-alpha-weak), transparent 52%);
+}
+
+.knowledge-table table {
+  table-layout: fixed;
+  background: var(--surface-background);
+}
+
+.knowledge-table thead th {
+  background: color-mix(in srgb, var(--neutral-alpha-weak), var(--surface-background));
+}
+
+.knowledge-table .knowledge-area-row {
+  background: var(--neutral-alpha-weak);
+}
+
+.knowledge-table .knowledge-row-button {
+  max-width: 100%;
+}
+
+.knowledge-table .knowledge-row-button > div {
+  min-width: 0;
+}
+
+.knowledge-table .knowledge-note-button {
+  margin-inline-start: 2.75rem;
+  max-width: calc(100% - 2.75rem);
+}
+
+.knowledge-note-button .knowledge-name {
+  font-weight: 500;
+}
+
+.knowledge-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-table-empty {
+  white-space: normal;
 }

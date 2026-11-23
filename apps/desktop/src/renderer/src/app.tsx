@@ -18,6 +18,7 @@ import { Row } from "@once-ui-system/core/components/Row";
 import { Text } from "@once-ui-system/core/components/Text";
 import { Activity, useEffect, useLayoutEffect, useRef, useState } from "react";
 import icon from "../../../resources/icon.png?url";
+import { AppGuide } from "./app-guide";
 import { KnowledgePage } from "./knowledge-page";
 import { SettingsPage } from "./settings-page";
 import { PlanReplay } from "./workflow/plan-replay";
@@ -29,6 +30,7 @@ import {
 import { ProviderMessages } from "./workflow/provider-messages";
 import { ProviderQuota } from "./workflow/provider-quota";
 import type { Selection } from "./workflow/stages";
+import { canvasStyleStorageKey, readCanvasStyle } from "./workflow/workflow-canvas-style";
 import { WorkflowDetails } from "./workflow/workflow-details";
 import { workflowError } from "./workflow/workflow-error";
 import { WorkflowForm } from "./workflow/workflow-form";
@@ -69,6 +71,11 @@ function isWorkflowRunning({ plan, build, milestones }: WorkflowRecord) {
 export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }) {
   const { addToast } = useToast();
   const [page, setPage] = useState<"workflows" | "settings" | "knowledge">("workflows");
+  const [guideOrigin, setGuideOrigin] = useState<"workflows" | "settings">();
+  const [settingsTab, setSettingsTab] = useState<"appearance" | "mascot">("appearance");
+  const guideButton = useRef<HTMLButtonElement>(null);
+  const guideLauncher = useRef<HTMLElement | null>(null);
+  const settingsGuideButton = useRef<HTMLButtonElement>(null);
   const newWorkflowButton = useRef<HTMLButtonElement>(null);
   const historyRevision = useRef(0);
   const settingsButton = useRef<HTMLButtonElement>(null);
@@ -96,6 +103,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   const selectedMilestone = current?.milestones?.find(({ id }) => id === selection.milestoneId);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [canvasSession, setCanvasSession] = useState(0);
+  const [canvasStyle, setCanvasStyle] = useState(readCanvasStyle);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -103,7 +111,14 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
   useLayoutEffect(() => {
     inspectedWorkflow.current = currentId;
     if (inspector.current) inspector.current.scrollTop = 0;
-  }, [currentId, selection.stage, selection.section, selection.taskId, selection.milestoneId]);
+  }, [
+    currentId,
+    selection.stage,
+    selection.section,
+    selection.taskId,
+    selection.milestoneId,
+    selection.queue,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -260,12 +275,34 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
     }
   }
 
+  function startGuide(origin: "workflows" | "settings") {
+    guideLauncher.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPage("workflows");
+    setGuideOrigin(origin);
+  }
+
+  function closeGuide() {
+    setGuideOrigin(undefined);
+    if (guideOrigin === "settings") {
+      setSettingsTab("mascot");
+      setPage("settings");
+      requestAnimationFrame(() => settingsGuideButton.current?.focus());
+      return;
+    }
+    requestAnimationFrame(() => {
+      const launcher = guideLauncher.current;
+      if (launcher?.isConnected && launcher !== document.body) launcher.focus();
+      else guideButton.current?.focus();
+    });
+  }
+
   const workspaceName = current?.workspacePath.split(/[/\\]/).filter(Boolean).at(-1);
 
   return (
     <MascotDesignContext value={mascotDesign}>
       <Activity mode={page === "workflows" ? "visible" : "hidden"}>
-        <main className="workflow-app" data-workflow-app>
+        <main className="workflow-app" data-workflow-app inert={Boolean(guideOrigin)}>
           <header className="app-header">
             <div className="app-brand">
               <img src={icon} width="32" height="32" alt="" />
@@ -276,6 +313,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                 Version {desktop.version}
               </Text>
               <Button
+                data-guide="knowledge"
                 ref={knowledgeButton}
                 type="button"
                 size="s"
@@ -286,12 +324,28 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                 Company Knowledge
               </Button>
               <Button
+                ref={guideButton}
+                disabled={loading}
+                type="button"
+                size="s"
+                variant="tertiary"
+                prefixIcon="help"
+                aria-haspopup="dialog"
+                onClick={() => startGuide("workflows")}
+              >
+                App guide
+              </Button>
+              <Button
+                data-guide="settings"
                 ref={settingsButton}
                 type="button"
                 size="s"
                 variant="tertiary"
                 prefixIcon="settings"
-                onClick={() => setPage("settings")}
+                onClick={() => {
+                  setSettingsTab("appearance");
+                  setPage("settings");
+                }}
               >
                 Settings
               </Button>
@@ -301,6 +355,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
           <aside className="workflow-sidebar" aria-label="Saved workflows">
             {current && (
               <Button
+                data-guide="new-workflow"
                 ref={newWorkflowButton}
                 variant="secondary"
                 type="button"
@@ -391,6 +446,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                       size="s"
                       variant="secondary"
                       suffixIcon={inspectorOpen ? "chevronRight" : "chevronLeft"}
+                      data-guide="workflow-details"
                       aria-controls="workflow-details"
                       aria-expanded={inspectorOpen}
                       onClick={() => setInspectorOpen((open) => !open)}
@@ -401,15 +457,26 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                 </header>
                 <WorkflowGraph
                   key={canvasSession}
+                  workflowId={current.id}
                   hasWorkflow
                   plan={current.plan}
                   build={current.build}
                   milestones={current.milestones}
                   stageSettings={current.stageSettings}
+                  canvasStyle={canvasStyle}
+                  onCanvasStyleChange={(style) => {
+                    setCanvasStyle(style);
+                    try {
+                      localStorage.setItem(canvasStyleStorageKey, style);
+                    } catch {
+                      // The selected style still applies for this session.
+                    }
+                  }}
                   selection={selection}
                   onSelect={(next) => {
                     setSelection(next);
-                    if (next.milestoneId || next.section === "new") setInspectorOpen(true);
+                    if (next.milestoneId || next.section === "new" || next.queue)
+                      setInspectorOpen(true);
                   }}
                   onAddMilestone={() => {
                     setSelection({ stage: "build", milestoneId: "new" });
@@ -464,7 +531,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                   />
                 ) : (
                   <WorkflowDetails
-                    key={`${current.id}/${selection.stage}/${selection.section ?? ""}/${selection.taskId ?? ""}`}
+                    key={`${current.id}/${selection.stage}/${selection.section ?? ""}/${selection.taskId ?? ""}/${Boolean(selection.queue)}`}
                     workflow={current}
                     selection={selection}
                     saveStageSettings={async (settings) => {
@@ -473,6 +540,7 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
                       );
                     }}
                     openMilestone={(id) => setSelection({ stage: "build", milestoneId: id })}
+                    openBuildTask={(taskId) => setSelection({ stage: "build", taskId })}
                     closeSection={() => setSelection({ stage: selection.stage })}
                     editSection={async (change) => {
                       const stage = selection.stage;
@@ -539,10 +607,12 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
             <WorkflowOnboarding
               newWorkflowButton={newWorkflowButton}
               onNewWorkflow={() => setIntakeOpen(true)}
+              onStartGuide={() => startGuide("workflows")}
             />
           )}
         </main>
       </Activity>
+      {guideOrigin && <AppGuide hasWorkflow={Boolean(current)} onClose={closeGuide} />}
       {deleteTarget && (
         <Dialog
           open
@@ -656,6 +726,9 @@ export function App({ desktop, api }: { desktop: DesktopInfo; api: WorkflowApi }
       {page === "settings" && (
         <SettingsPage
           desktop={desktop}
+          initialTab={settingsTab}
+          guideButton={settingsGuideButton}
+          onStartGuide={() => startGuide("settings")}
           checkJira={() => api.assignedSprintIssues(true)}
           defaultProvider={defaultProvider}
           onProviderChange={(provider) => {

@@ -1,3 +1,4 @@
+import { Mascot, mascotDesignProps } from "@once-ui-system/core";
 import { Button } from "@once-ui-system/core/components/Button";
 import { Card } from "@once-ui-system/core/components/Card";
 import { Column } from "@once-ui-system/core/components/Column";
@@ -7,7 +8,8 @@ import { Icon } from "@once-ui-system/core/components/Icon";
 import { Row } from "@once-ui-system/core/components/Row";
 import { Text } from "@once-ui-system/core/components/Text";
 import { MatrixFx } from "@once-ui-system/fx";
-import type { Ref } from "react";
+import { useContext, type Ref } from "react";
+import { MascotDesignContext } from "./provider-activity";
 
 // MatrixFx resolves color tokens when the canvas starts, before the theme may be ready.
 const matrixColors = ["#7a63eb"];
@@ -37,10 +39,13 @@ const stages = [
 export function WorkflowOnboarding({
   newWorkflowButton,
   onNewWorkflow,
+  onStartGuide,
 }: {
   newWorkflowButton: Ref<HTMLButtonElement>;
   onNewWorkflow(): void;
+  onStartGuide(): void;
 }) {
+  const design = useContext(MascotDesignContext);
   return (
     <Column
       as="section"
@@ -84,6 +89,13 @@ export function WorkflowOnboarding({
             s={{ padding: "24" }}
           >
             <Column gap="16" maxWidth="32rem">
+              <Mascot
+                {...mascotDesignProps(design)}
+                mood="happy"
+                lookAt="pointer"
+                size={72}
+                aria-hidden="true"
+              />
               <Heading as="h2" textVariant="display-strong-s" wrap="balance">
                 From work item to implementation
               </Heading>
@@ -91,21 +103,30 @@ export function WorkflowOnboarding({
                 Plan and build with Codex or Claude Code in a local workspace. Pick up saved
                 workflows from the sidebar.
               </Text>
-              <Row paddingTop="8">
+              <Row paddingTop="8" gap="8" wrap>
                 <Button
                   ref={newWorkflowButton}
                   type="button"
                   prefixIcon="plus"
                   aria-haspopup="dialog"
                   data-new-workflow
+                  data-guide="new-workflow"
                   onClick={onNewWorkflow}
                 >
                   New workflow
                 </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  aria-haspopup="dialog"
+                  onClick={onStartGuide}
+                >
+                  Take a tour
+                </Button>
               </Row>
             </Column>
           </Column>
-          <Grid minColumnWidth={204} gap="12">
+          <Grid minColumnWidth={204} gap="12" data-guide="workflow-path">
             {stages.map(({ title, icon, description }) => (
               <Card
                 key={title}

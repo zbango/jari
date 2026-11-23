@@ -7,8 +7,11 @@ import type {
   WorkflowStageSettings,
 } from "@agent-desktop/shared";
 import { Button } from "@once-ui-system/core/components/Button";
+import { Card } from "@once-ui-system/core/components/Card";
 import { Column } from "@once-ui-system/core/components/Column";
+import { Icon } from "@once-ui-system/core/components/Icon";
 import { InlineCode } from "@once-ui-system/core/components/InlineCode";
+import { Row } from "@once-ui-system/core/components/Row";
 import { Tab, TabList, TabPanel, Tabs } from "@once-ui-system/core/components/Tabs";
 import { Text } from "@once-ui-system/core/components/Text";
 import { useState } from "react";
@@ -151,6 +154,7 @@ export function WorkflowDetails({
   openMilestone,
   editSection,
   closeSection,
+  openBuildTask,
 }: {
   workflow: WorkflowRecord;
   selection: Selection;
@@ -168,6 +172,7 @@ export function WorkflowDetails({
   openMilestone(id: string): void;
   editSection(change: WorkflowSectionChange): Promise<void>;
   closeSection(): void;
+  openBuildTask(id: string): void;
 }) {
   const stage = stages[selection.stage];
   const settings = workflow.stageSettings?.[selection.stage];
@@ -187,7 +192,7 @@ export function WorkflowDetails({
       ? workflow.plan?.state === "running" ||
         (workflow.plan?.state === "ready" && workflow.plan.reviewAttempt?.state === "running")
       : workflow.build?.state === "running";
-  const canConfigure = !task;
+  const canConfigure = !task && !selection.queue;
   const hasActivity = selection.stage !== "idea";
   const [tab, setTab] = useState(source === "activity" && hasActivity ? "activity" : "overview");
   if (selection.section === "new") {
@@ -200,6 +205,54 @@ export function WorkflowDetails({
           onChange={editSection}
           onCancel={closeSection}
         />
+      </Column>
+    );
+  }
+  if (selection.queue) {
+    const tasks = workflow.build?.tasks ?? [];
+    return (
+      <Column fillWidth gap="12">
+        <MilestoneInspectorHeader
+          title="Task queue"
+          caption={title}
+          icon="layers"
+          status={status}
+        />
+        <Text textVariant="body-default-s" onBackground="neutral-weak">
+          {tasks.filter(({ state }) => state === "approved").length} of {tasks.length} tasks
+          approved
+        </Text>
+        {tasks.map((entry) => {
+          const taskStatus = buildTaskStatus[entry.state];
+          return (
+            <Card
+              key={entry.id}
+              fillWidth
+              gap="8"
+              wrap
+              padding="12"
+              radius="m"
+              tint="brand"
+              horizontal="between"
+              vertical="center"
+              aria-label={`Open task ${entry.id}: ${entry.title}`}
+              onClick={() => openBuildTask(entry.id)}
+            >
+              <Text textVariant="body-default-s">
+                {entry.id}. {entry.title}
+              </Text>
+              <Row
+                gap="4"
+                vertical="center"
+                className="workflow-status"
+                data-kind={taskStatus.kind}
+              >
+                <Icon name={taskStatus.icon} size="xs" decorative />
+                {taskStatus.label}
+              </Row>
+            </Card>
+          );
+        })}
       </Column>
     );
   }

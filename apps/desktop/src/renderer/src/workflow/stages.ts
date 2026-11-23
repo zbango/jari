@@ -21,7 +21,13 @@ export const stages = {
 } as const;
 
 export type Stage = keyof typeof stages;
-export type Selection = { stage: Stage; section?: string; taskId?: string; milestoneId?: string };
+export type Selection = {
+  stage: Stage;
+  section?: string;
+  taskId?: string;
+  milestoneId?: string;
+  queue?: boolean;
+};
 export type WorkflowStatusKind = "waiting" | "running" | "review" | "saved" | "failed" | "blocked";
 type WorkflowStatus = {
   label: string;
